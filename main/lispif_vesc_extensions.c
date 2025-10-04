@@ -3235,6 +3235,11 @@ static lbm_value ext_gnss_speed(lbm_value *args, lbm_uint argn) {
 	return lbm_enc_float(nmea_get_state()->rmc.speed);
 }
 
+static lbm_value ext_gnss_n_sat(lbm_value *args, lbm_uint argn) {
+	(void)args; (void)argn;
+	return lbm_enc_i(nmea_get_state()->gga.n_sat);
+}
+
 static lbm_value ext_gnss_hdop(lbm_value *args, lbm_uint argn) {
 	(void)args; (void)argn;
 	return lbm_enc_float(nmea_get_state()->gga.h_dop);
@@ -6609,6 +6614,7 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_add_extension("gnss-lat-lon", ext_gnss_lat_lon);
 		lbm_add_extension("gnss-height", ext_gnss_height);
 		lbm_add_extension("gnss-speed", ext_gnss_speed);
+		lbm_add_extension("gnss-n-sat", ext_gnss_n_sat);
 		lbm_add_extension("gnss-hdop", ext_gnss_hdop);
 		lbm_add_extension("gnss-date-time", ext_gnss_date_time);
 		lbm_add_extension("gnss-age", ext_gnss_age);
