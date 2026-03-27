@@ -53,6 +53,7 @@
 
 static bool is_connected = false;
 static uint16_t ble_current_mtu = DEFAULT_BLE_MTU;
+static const char *TAG = "comm_ble";
 
 static uint16_t notify_conn_id = 0;
 static esp_gatt_if_t notify_gatts_if;
@@ -486,7 +487,14 @@ static void gatts_event_handler(
 					ble_service_uuid128[i];
 			}
 
-			esp_ble_gap_set_device_name((char *)backup.config.ble_name);
+			const char *ble_name = backup.config.ble_name[0] != '\0'
+				? (const char *)backup.config.ble_name
+				: "Express";
+			esp_err_t name_res = esp_ble_gap_set_device_name(ble_name);
+			if (name_res != ESP_OK) {
+				ESP_LOGW(TAG, "Failed to set BLE name (%s): %s", ble_name,
+					esp_err_to_name(name_res));
+			}
 
 			esp_ble_gap_config_adv_data(&ble_adv_data);
 			adv_config_done |= ADV_CFG_FLAG;
@@ -678,8 +686,6 @@ void comm_ble_init(void) {
 	esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL);
 	esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL);
 	esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL);
-
-	esp_bt_dev_set_device_name((char *)backup.config.ble_name);
 
 	esp_ble_gatts_register_callback(gatts_event_handler);
 	esp_ble_gap_register_callback(gap_event_handler);

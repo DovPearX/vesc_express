@@ -21,7 +21,7 @@
 #include "bme280_if.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include <string.h>
 
 // Private variables
@@ -31,22 +31,51 @@ static float m_last_pres = 0.0;
 
 static volatile bool mutex_init = false;
 static SemaphoreHandle_t i2c_mutex;
+static i2c_master_bus_handle_t bme_i2c_bus = NULL;
+static i2c_master_dev_handle_t bme_i2c_dev = NULL;
+
+static esp_err_t bme280_open_device(bool create_bus, int pin_sda, int pin_scl) {
+	if (bme_i2c_dev) {
+		return ESP_OK;
+	}
+
+	if (!bme_i2c_bus) {
+		if (create_bus) {
+			i2c_master_bus_config_t bus_cfg = {
+				.i2c_port = I2C_NUM_0,
+				.sda_io_num = pin_sda,
+				.scl_io_num = pin_scl,
+				.clk_source = I2C_CLK_SRC_DEFAULT,
+				.glitch_ignore_cnt = 7,
+				.intr_priority = 0,
+				.trans_queue_depth = 4,
+				.flags.enable_internal_pullup = 1,
+			};
+			esp_err_t bus_res = i2c_new_master_bus(&bus_cfg, &bme_i2c_bus);
+			if (bus_res != ESP_OK) {
+				return bus_res;
+			}
+		} else {
+			if (i2c_master_get_bus_handle(I2C_NUM_0, &bme_i2c_bus) != ESP_OK || !bme_i2c_bus) {
+				return ESP_ERR_INVALID_STATE;
+			}
+		}
+	}
+
+	i2c_device_config_t dev_cfg = {
+		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+		.device_address = BME280_I2C_ADDR_PRIM,
+		.scl_speed_hz = 100000,
+		.scl_wait_us = 0,
+	};
+	return i2c_master_bus_add_device(bme_i2c_bus, &dev_cfg, &bme_i2c_dev);
+}
 
 // Private functions
 static void bme_task(void *arg);
 
 void bme280_if_init(int pin_sda, int pin_scl) {
-	i2c_config_t conf = {
-			.mode = I2C_MODE_MASTER,
-			.sda_io_num = pin_sda,
-			.scl_io_num = pin_scl,
-			.sda_pullup_en = GPIO_PULLUP_ENABLE,
-			.scl_pullup_en = GPIO_PULLUP_ENABLE,
-			.master.clk_speed = 100000,
-	};
-
-	i2c_param_config(0, &conf);
-	i2c_driver_install(0, conf.mode, 0, 0, 0);
+	bme280_open_device(true, pin_sda, pin_scl);
 
 	xTaskCreatePinnedToCore(bme_task, "BME280", 1536, NULL, 6, NULL, tskNO_AFFINITY);
 }
@@ -54,6 +83,7 @@ void bme280_if_init(int pin_sda, int pin_scl) {
 void bme280_if_init_with_mutex(SemaphoreHandle_t mutex) {
 	mutex_init = true;
 	i2c_mutex = mutex;
+	bme280_open_device(false, 0, 0);
 	xTaskCreatePinnedToCore(bme_task, "BME280", 1536, NULL, 6, NULL, tskNO_AFFINITY);
 }
 
@@ -84,7 +114,7 @@ static int8_t user_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, v
 		xSemaphoreTake(i2c_mutex, portMAX_DELAY);
 	}
 
-	esp_err_t res = i2c_master_write_read_device(0, BME280_I2C_ADDR_PRIM, txbuf, 1, reg_data, len, 1000 / portTICK_PERIOD_MS);
+	esp_err_t res = bme_i2c_dev ? i2c_master_transmit_receive(bme_i2c_dev, txbuf, 1, reg_data, len, 1000 / portTICK_PERIOD_MS) : ESP_ERR_INVALID_STATE;
 
 	if (mutex_init) {
 		xSemaphoreGive(i2c_mutex);
@@ -104,7 +134,7 @@ static int8_t user_i2c_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t
 		xSemaphoreTake(i2c_mutex, portMAX_DELAY);
 	}
 
-	esp_err_t res = i2c_master_write_to_device(0, BME280_I2C_ADDR_PRIM, txbuf, len + 1, 1000 / portTICK_PERIOD_MS);
+	esp_err_t res = bme_i2c_dev ? i2c_master_transmit(bme_i2c_dev, txbuf, len + 1, 1000 / portTICK_PERIOD_MS) : ESP_ERR_INVALID_STATE;
 
 	if (mutex_init) {
 		xSemaphoreGive(i2c_mutex);

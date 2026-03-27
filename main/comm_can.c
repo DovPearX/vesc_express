@@ -36,6 +36,8 @@
 #include "bms.h"
 #include "utils.h"
 #include "soc/gpio_sig_map.h"
+#include "driver/gpio.h"
+#include "esp_rom_gpio.h"
 #include <string.h>
 
 // Status messages

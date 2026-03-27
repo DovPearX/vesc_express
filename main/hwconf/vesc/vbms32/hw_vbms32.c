@@ -21,7 +21,7 @@
 #include "bq769x2_defs.h"
 
 #include "main.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "esp_sleep.h"
 #include "lispif.h"
 #include "lispbm.h"
@@ -41,6 +41,7 @@
 // Variables
 static SemaphoreHandle_t i2c_mutex;
 static SemaphoreHandle_t bq_mutex;
+static i2c_master_bus_handle_t i2c_bus_handle = NULL;
 static unsigned int m_cells_ic1 = 16;
 static unsigned int m_cells_ic2 = 16;
 static uint16_t m_bal_state_ic1 = 0;
@@ -50,28 +51,70 @@ static uint16_t m_bal_state_ic2 = 0;
 static char *error_comm_bq1 = "BQ1 communication error";
 static char *error_comm_bq2 = "BQ2 communication error";
 
+static esp_err_t i2c_start_bus(int scl_speed_hz, bool force_recreate) {
+	if (force_recreate && i2c_bus_handle) {
+		i2c_del_master_bus(i2c_bus_handle);
+		i2c_bus_handle = NULL;
+	}
+
+	if (i2c_bus_handle) {
+		return ESP_OK;
+	}
+
+	i2c_master_bus_config_t bus_cfg = {
+		.i2c_port = I2C_NUM_0,
+		.sda_io_num = PIN_SDA,
+		.scl_io_num = PIN_SCL,
+		.clk_source = I2C_CLK_SRC_DEFAULT,
+		.glitch_ignore_cnt = 7,
+		.intr_priority = 0,
+		.trans_queue_depth = 4,
+		.flags.enable_internal_pullup = 1,
+	};
+
+	(void)scl_speed_hz;
+	return i2c_new_master_bus(&bus_cfg, &i2c_bus_handle);
+}
+
 static esp_err_t i2c_tx_rx(
 	uint8_t addr, const uint8_t *write_buffer, size_t write_size,
 	uint8_t *read_buffer, size_t read_size
 ) {
+	if (!i2c_bus_handle) {
+		return ESP_ERR_INVALID_STATE;
+	}
 
 	xSemaphoreTake(i2c_mutex, portMAX_DELAY);
 
 	esp_err_t res;
+	i2c_device_config_t dev_cfg = {
+		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+		.device_address = addr,
+		.scl_speed_hz = I2C_SPEED,
+		.scl_wait_us = 0,
+	};
+	i2c_master_dev_handle_t dev_handle = NULL;
+	res = i2c_master_bus_add_device(i2c_bus_handle, &dev_cfg, &dev_handle);
+	if (res != ESP_OK) {
+		xSemaphoreGive(i2c_mutex);
+		return res;
+	}
+
 	if (read_size > 0 && read_buffer != NULL) {
 		if (write_size > 0 && write_buffer != NULL) {
-			res = i2c_master_write_read_device(
-				0, addr, write_buffer, write_size, read_buffer, read_size, 500
-			);
+			res = i2c_master_transmit_receive(dev_handle, write_buffer, write_size, read_buffer, read_size, 500);
 		} else {
-			res = i2c_master_read_from_device(
-				0, addr, read_buffer, read_size, 500
-			);
+			res = i2c_master_receive(dev_handle, read_buffer, read_size, 500);
 		}
 	} else {
-		res =
-			i2c_master_write_to_device(0, addr, write_buffer, write_size, 500);
+		if (write_size > 0 && write_buffer != NULL) {
+			res = i2c_master_transmit(dev_handle, write_buffer, write_size, 500);
+		} else {
+			res = ESP_OK;
+		}
 	}
+
+	i2c_master_bus_rm_device(dev_handle);
 	xSemaphoreGive(i2c_mutex);
 
 	return res;
@@ -477,23 +520,10 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 	gpio_set_level(PIN_COM_EN, 1);
 
 	// Restart i2c
-
-	i2c_driver_delete(0);
-
-	i2c_config_t conf = {
-		.mode             = I2C_MODE_MASTER,
-		.sda_io_num       = PIN_SDA,
-		.scl_io_num       = PIN_SCL,
-		.sda_pullup_en    = GPIO_PULLUP_ENABLE,
-		.scl_pullup_en    = GPIO_PULLUP_ENABLE,
-		.master.clk_speed = I2C_SPEED,
-	};
-
-	i2c_param_config(0, &conf);
-	i2c_driver_install(0, conf.mode, 0, 0, 0);
-
-	i2c_reset_tx_fifo(0);
-	i2c_reset_rx_fifo(0);
+	if (i2c_start_bus(I2C_SPEED, true) != ESP_OK) {
+		xSemaphoreGive(bq_mutex);
+		return ENC_SYM_NIL;
+	}
 
 	vTaskDelay(50);
 
@@ -1291,12 +1321,7 @@ static lbm_value ext_i2c_detect_addr(lbm_value *args, lbm_uint argn) {
 
 	uint8_t address = lbm_dec_as_u32(args[0]);
 	xSemaphoreTake(i2c_mutex, portMAX_DELAY);
-	i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-	i2c_master_start(cmd);
-	i2c_master_write_byte(cmd, (address << 1) | I2C_MASTER_WRITE, true);
-	i2c_master_stop(cmd);
-	esp_err_t ret = i2c_master_cmd_begin(0, cmd, 50 / portTICK_PERIOD_MS);
-	i2c_cmd_link_delete(cmd);
+	esp_err_t ret = i2c_master_probe(i2c_bus_handle, address, 50);
 	xSemaphoreGive(i2c_mutex);
 
 	return ret == ESP_OK ? ENC_SYM_TRUE : ENC_SYM_NIL;
@@ -1407,17 +1432,7 @@ void hw_init(void) {
 	gpconf.pull_up_en   = GPIO_PULLUP_DISABLE;
 	gpio_config(&gpconf);
 
-	i2c_config_t conf = {
-		.mode             = I2C_MODE_MASTER,
-		.sda_io_num       = PIN_SDA,
-		.scl_io_num       = PIN_SCL,
-		.sda_pullup_en    = GPIO_PULLUP_ENABLE,
-		.scl_pullup_en    = GPIO_PULLUP_ENABLE,
-		.master.clk_speed = 100000,
-	};
-
-	i2c_param_config(0, &conf);
-	i2c_driver_install(0, conf.mode, 0, 0, 0);
+	i2c_start_bus(100000, false);
 
 	lispif_add_ext_load_callback(load_extensions);
 }

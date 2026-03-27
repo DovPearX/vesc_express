@@ -1,7 +1,8 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.16)
 
 # You can set a HW here when e.g. building with the eclipse plugin
 # set(HW_NAME "Wcore")
+set(HW_NAME "Devkit S3 PSRAM")
 
 # Default build target Logic
 if(NOT DEFINED HW_NAME)
@@ -120,6 +121,9 @@ message("Processing target ${HW_NAME} on ${HW_TARGET} for file ${HW_FILE_NAME}")
 # CMakeLists in this exact order for cmake to work correctly
 set(PROJECT_VER "6.0") 
 
+# Keep Kconfig parse report quiet during repeated migration builds.
+set(ENV{KCONFIG_REPORT_VERBOSITY} "quiet")
+
 # Include ESP-IDF project cmake
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
@@ -155,3 +159,4 @@ if(DEFINED ENV{USER_GIT_BRANCH_NAME})
 endif()
 
 idf_build_set_property(COMPILE_OPTIONS "-fdiagnostics-color=always" APPEND)
+idf_build_set_property(COMPILE_OPTIONS "-Wno-error=unused-label" APPEND)

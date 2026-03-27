@@ -101,6 +101,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "."
 "config"
 "hwconf"
+"hwconf/rads"
 "hwconf/trampa"
 "hwconf/trampa/bms_rb"
 "hwconf/vesc"

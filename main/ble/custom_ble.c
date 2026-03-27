@@ -106,6 +106,7 @@ static uint16_t ble_current_mtu = 20;
 static uint8_t adv_config_done = 0;
 
 static bool use_custom_adv_data = false;
+static const char *TAG = "custom_ble";
 
 static esp_ble_adv_data_t ble_adv_data = {
 	.set_scan_rsp     = false,
@@ -371,7 +372,14 @@ static void gatts_event_handler(
 			// There should only ever be one gatt interface.
 			stored_gatts_if = gatts_if;
 
-			esp_ble_gap_set_device_name(device_name);
+			const char *name_to_set = device_name[0] != '\0'
+				? device_name
+				: (const char *)backup.config.ble_name;
+			esp_err_t name_res = esp_ble_gap_set_device_name(name_to_set);
+			if (name_res != ESP_OK) {
+				ESP_LOGW(TAG, "Failed to set BLE name (%s): %s", name_to_set,
+					esp_err_to_name(name_res));
+			}
 
 			adv_config_done |= ADV_CFG_FLAG | SCAN_RSP_CFG_FLAG;
 			if (use_custom_adv_data) {
@@ -597,8 +605,6 @@ custom_ble_result_t custom_ble_start() {
 	esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL);
 	esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL);
 	esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL);
-
-	esp_bt_dev_set_device_name(device_name);
 
 	esp_ble_gatts_register_callback(gatts_event_handler);
 	esp_ble_gap_register_callback(gap_event_handler);
@@ -1142,6 +1148,7 @@ void custom_ble_init() {
 		return;
 	}
 
-	memcpy(device_name, (char *)backup.config.ble_name, 9);
-	device_name[9] = '\0';
+	strncpy(device_name, (const char *)backup.config.ble_name,
+		CUSTOM_BLE_MAX_NAME_LEN);
+	device_name[CUSTOM_BLE_MAX_NAME_LEN] = '\0';
 }

@@ -21,10 +21,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 
 #include "disp_ssd1306.h"
-#include "driver/i2c.h"
 #include "lispif.h"
 #include "lispbm.h"
 
@@ -33,20 +32,54 @@
 
 #define DISPLAY_I2C_ADDRESS 0x3C
 
+static i2c_master_bus_handle_t s_disp_bus = NULL;
+static i2c_master_dev_handle_t s_disp_dev = NULL;
+
+static esp_err_t disp_ssd1306_write(const uint8_t *data, size_t len) {
+	if (!s_disp_dev) {
+		return ESP_ERR_INVALID_STATE;
+	}
+
+	return i2c_master_transmit(s_disp_dev, data, len, 2000);
+}
+
 
 void disp_ssd1306_init(int pin_sda, int pin_scl, uint32_t clk_speed) {
+	if (s_disp_dev) {
+		i2c_master_bus_rm_device(s_disp_dev);
+		s_disp_dev = NULL;
+	}
+	if (s_disp_bus) {
+		i2c_del_master_bus(s_disp_bus);
+		s_disp_bus = NULL;
+	}
 
-	i2c_config_t conf = {
-			.mode = I2C_MODE_MASTER,
+	i2c_master_bus_config_t bus_cfg = {
+			.i2c_port = I2C_NUM_0,
 			.sda_io_num = pin_sda,
 			.scl_io_num = pin_scl,
-			.sda_pullup_en = GPIO_PULLUP_ENABLE,
-			.scl_pullup_en = GPIO_PULLUP_ENABLE,
-			.master.clk_speed = clk_speed,
+			.clk_source = I2C_CLK_SRC_DEFAULT,
+			.glitch_ignore_cnt = 7,
+			.intr_priority = 0,
+			.trans_queue_depth = 4,
+			.flags.enable_internal_pullup = 1,
 	};
 
-	i2c_param_config(0, &conf);
-	i2c_driver_install(0, conf.mode, 0, 0, 0);
+	if (i2c_new_master_bus(&bus_cfg, &s_disp_bus) != ESP_OK) {
+		return;
+	}
+
+	i2c_device_config_t dev_cfg = {
+			.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+			.device_address = DISPLAY_I2C_ADDRESS,
+			.scl_speed_hz = clk_speed,
+			.scl_wait_us = 0,
+	};
+
+	if (i2c_master_bus_add_device(s_disp_bus, &dev_cfg, &s_disp_dev) != ESP_OK) {
+		i2c_del_master_bus(s_disp_bus);
+		s_disp_bus = NULL;
+	}
 }
 
 static const uint8_t disp_ssd1306_init_sequence[19][5] = {
@@ -79,15 +112,15 @@ void disp_ssd1306_clear(uint32_t color) {
 	buffer[0] = 0x40;
 
 	memset(&buffer[1], color ? 1 : 0 , 1024);
-	i2c_master_write_to_device(0, DISPLAY_I2C_ADDRESS, buffer, 1025, 2000);
+	disp_ssd1306_write(buffer, 1025);
 	free(buffer);
 }
 
 void disp_ssd1306_reset(void) {
 	for (int i = 0; i < 19; i ++ ) {
-		i2c_master_write_to_device(0, DISPLAY_I2C_ADDRESS,
+		disp_ssd1306_write(
 				&disp_ssd1306_init_sequence[i][1],
-				disp_ssd1306_init_sequence[i][0], 2000);
+				disp_ssd1306_init_sequence[i][0]);
 	}
 	disp_ssd1306_clear(0);
 }
@@ -126,7 +159,7 @@ bool disp_ssd1306_render_image(image_buffer_t *img, uint16_t x, uint16_t y, colo
 			}
 		}
 
-		i2c_master_write_to_device(0, DISPLAY_I2C_ADDRESS, buffer, 1025, 2000);
+		disp_ssd1306_write(buffer, 1025);
 		free(buffer);
 	}
 	break;

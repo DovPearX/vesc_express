@@ -26,6 +26,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "driver/i2c_master.h"
 
 #include <math.h>
 #include <string.h>
@@ -103,15 +104,33 @@ bool imu_i2c_tx_rx(uint8_t addr,
 		xSemaphoreTake(m_i2c_mutex, portMAX_DELAY);
 	}
 
-	esp_err_t res;
-	if (read_size > 0 && read_buffer != NULL) {
-		if (write_size > 0 && write_buffer != NULL) {
-			res = i2c_master_write_read_device(0, addr, write_buffer, write_size, read_buffer, read_size, 2000);
-		} else {
-			res = i2c_master_read_from_device(0, addr, read_buffer, read_size, 2000);
+	esp_err_t res = ESP_ERR_INVALID_STATE;
+	i2c_master_bus_handle_t bus_handle = NULL;
+	if (i2c_master_get_bus_handle(I2C_NUM_0, &bus_handle) == ESP_OK && bus_handle) {
+		i2c_device_config_t dev_cfg = {
+			.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+			.device_address = addr,
+			.scl_speed_hz = 400000,
+			.scl_wait_us = 0,
+		};
+		i2c_master_dev_handle_t dev_handle = NULL;
+		res = i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle);
+		if (res == ESP_OK) {
+			if (read_size > 0 && read_buffer != NULL) {
+				if (write_size > 0 && write_buffer != NULL) {
+					res = i2c_master_transmit_receive(dev_handle, write_buffer, write_size, read_buffer, read_size, 2000);
+				} else {
+					res = i2c_master_receive(dev_handle, read_buffer, read_size, 2000);
+				}
+			} else {
+				if (write_size > 0 && write_buffer != NULL) {
+					res = i2c_master_transmit(dev_handle, write_buffer, write_size, 2000);
+				} else {
+					res = ESP_OK;
+				}
+			}
+			i2c_master_bus_rm_device(dev_handle);
 		}
-	} else {
-		res = i2c_master_write_to_device(0, addr, write_buffer, write_size, 2000);
 	}
 
 	if (m_i2c_mutex != 0) {

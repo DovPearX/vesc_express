@@ -41,6 +41,4 @@ static int select_partition_number(bootloader_state_t *bs) {
 	return bootloader_utility_get_selected_boot_partition(bs);
 }
 
-struct _reent *__getreent(void) {
-	return _GLOBAL_REENT;
-}
+/* IDF6/newlib toolchain no longer requires this hook in bootloader build. */

@@ -17,7 +17,9 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
     */
 
-#include "esp_adc_cal.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 #include "adc.h"
 #include "terminal.h"
 #include "commands.h"
@@ -26,38 +28,77 @@
 
 // Private variables
 static bool cal_ok = false;
-static esp_adc_cal_characteristics_t adc1_chars;
+static adc_oneshot_unit_handle_t adc1_handle;
+static adc_cali_handle_t adc1_cali_handle;
+
+static void adc_config_channel(adc_channel_t ch) {
+	adc_oneshot_chan_cfg_t chan_cfg = {
+		.atten = ADC_ATTEN_DB_12,
+		.bitwidth = ADC_BITWIDTH_DEFAULT,
+	};
+	adc_oneshot_config_channel(adc1_handle, ch, &chan_cfg);
+}
 
 void adc_init(void) {
-	adc1_config_width(ADC_WIDTH_BIT_DEFAULT);
+	adc_oneshot_unit_init_cfg_t init_cfg = {
+		.unit_id = ADC_UNIT_1,
+		.clk_src = 0,
+		.ulp_mode = ADC_ULP_MODE_DISABLE,
+	};
+	if (adc_oneshot_new_unit(&init_cfg, &adc1_handle) != ESP_OK) {
+		return;
+	}
 
 #ifdef HW_ADC_CH0
-	adc1_config_channel_atten(HW_ADC_CH0, ADC_ATTEN_DB_12);
+	adc_config_channel(HW_ADC_CH0);
 #endif
 #ifdef HW_ADC_CH1
-	adc1_config_channel_atten(HW_ADC_CH1, ADC_ATTEN_DB_12);
+	adc_config_channel(HW_ADC_CH1);
 #endif
 #ifdef HW_ADC_CH2
-	adc1_config_channel_atten(HW_ADC_CH2, ADC_ATTEN_DB_12);
+	adc_config_channel(HW_ADC_CH2);
 #endif
 #ifdef HW_ADC_CH3
-	adc1_config_channel_atten(HW_ADC_CH3, ADC_ATTEN_DB_12);
+	adc_config_channel(HW_ADC_CH3);
 #endif
 #ifdef HW_ADC_CH4
-	adc1_config_channel_atten(HW_ADC_CH4, ADC_ATTEN_DB_12);
+	adc_config_channel(HW_ADC_CH4);
 #endif
 
-	if (esp_adc_cal_check_efuse(ESP_ADC_CAL_VAL_EFUSE_TP) == ESP_OK) {
-		esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_DEFAULT, 0, &adc1_chars);
-		cal_ok = true;
-	}
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+	adc_cali_curve_fitting_config_t cali_cfg = {
+		.unit_id = ADC_UNIT_1,
+		.chan = ADC_CHANNEL_0,
+		.atten = ADC_ATTEN_DB_12,
+		.bitwidth = ADC_BITWIDTH_DEFAULT,
+	};
+	cal_ok = adc_cali_create_scheme_curve_fitting(&cali_cfg, &adc1_cali_handle) == ESP_OK;
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+	adc_cali_line_fitting_config_t cali_cfg = {
+		.unit_id = ADC_UNIT_1,
+		.atten = ADC_ATTEN_DB_12,
+		.bitwidth = ADC_BITWIDTH_DEFAULT,
+	};
+	cal_ok = adc_cali_create_scheme_line_fitting(&cali_cfg, &adc1_cali_handle) == ESP_OK;
+#else
+	cal_ok = false;
+#endif
 }
 
 float adc_get_voltage(adc1_channel_t ch) {
 	float res = -1.0;
 
-	if (cal_ok) {
-		res = (float)esp_adc_cal_raw_to_voltage(adc1_get_raw(ch), &adc1_chars) / 1000.0;
+	int raw = 0;
+	if (adc_oneshot_read(adc1_handle, ch, &raw) == ESP_OK) {
+		if (cal_ok) {
+			int mv = 0;
+			if (adc_cali_raw_to_voltage(adc1_cali_handle, raw, &mv) == ESP_OK) {
+				res = (float)mv / 1000.0;
+			}
+		} else {
+			// Fallback if calibration eFuse data/scheme is unavailable.
+			res = ((float)raw / 4095.0) * 3.3;
+		}
 	}
 
 	return res;

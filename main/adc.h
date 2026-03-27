@@ -21,7 +21,41 @@
 #define MAIN_ADC_H_
 
 #include "conf_general.h"
-#include "driver/adc.h"
+#include "hal/adc_types.h"
+
+// Compatibility aliases for hardware configs that still use legacy ADC1 names.
+typedef adc_channel_t adc1_channel_t;
+
+#ifndef ADC1_CHANNEL_0
+#define ADC1_CHANNEL_0 ADC_CHANNEL_0
+#endif
+#ifndef ADC1_CHANNEL_1
+#define ADC1_CHANNEL_1 ADC_CHANNEL_1
+#endif
+#ifndef ADC1_CHANNEL_2
+#define ADC1_CHANNEL_2 ADC_CHANNEL_2
+#endif
+#ifndef ADC1_CHANNEL_3
+#define ADC1_CHANNEL_3 ADC_CHANNEL_3
+#endif
+#ifndef ADC1_CHANNEL_4
+#define ADC1_CHANNEL_4 ADC_CHANNEL_4
+#endif
+#ifndef ADC1_CHANNEL_5
+#define ADC1_CHANNEL_5 ADC_CHANNEL_5
+#endif
+#ifndef ADC1_CHANNEL_6
+#define ADC1_CHANNEL_6 ADC_CHANNEL_6
+#endif
+#ifndef ADC1_CHANNEL_7
+#define ADC1_CHANNEL_7 ADC_CHANNEL_7
+#endif
+#ifndef ADC1_CHANNEL_8
+#define ADC1_CHANNEL_8 ADC_CHANNEL_8
+#endif
+#ifndef ADC1_CHANNEL_9
+#define ADC1_CHANNEL_9 ADC_CHANNEL_9
+#endif
 
 // Functions
 void adc_init(void);

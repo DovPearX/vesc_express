@@ -32,7 +32,7 @@
 #include "freertos/task.h"
 
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "driver/spi_master.h"
 #include "esp_err.h"
 
@@ -47,6 +47,8 @@
 #define TOUCH_I2C_PORT I2C_NUM_0
 #define TOUCH_I2C_DEFAULT_FREQ 400000
 #define TOUCH_EVENT_TASK_STACK 2048
+#define TOUCH_EVENT_LOCK_TIMEOUT_MS 20
+#define TOUCH_EVENT_MIN_PERIOD_MS 10
 
 static char *msg_invalid_gpio = "Invalid GPIO";
 static char *msg_invalid_size = "Invalid touch size";
@@ -60,8 +62,8 @@ static TaskHandle_t touch_event_task_handle = 0;
 static lispif_touch_driver_t touch_driver = {0};
 static esp_lcd_touch_handle_t touch_handle = NULL;
 static esp_lcd_panel_io_handle_t touch_io_handle = NULL;
-static i2c_port_t touch_i2c_port = TOUCH_I2C_PORT;
-static bool touch_owns_i2c_driver = false;
+static i2c_master_bus_handle_t touch_i2c_bus = NULL;
+static bool touch_owns_i2c_bus = false;
 static spi_host_device_t touch_spi_host = SPI2_HOST;
 static bool touch_owns_spi_bus = false;
 static bool touch_has_int = false;
@@ -161,14 +163,15 @@ static esp_err_t touch_esp_lcd_deinit(void) {
 		touch_io_handle = NULL;
 	}
 
-	if (touch_owns_i2c_driver) {
-		esp_err_t res = i2c_driver_delete(touch_i2c_port);
+	if (touch_owns_i2c_bus && touch_i2c_bus) {
+		esp_err_t res = i2c_del_master_bus(touch_i2c_bus);
 		if (res != ESP_OK && first_err == ESP_OK) {
 			first_err = res;
 		}
+		touch_i2c_bus = NULL;
 	}
 
-	touch_owns_i2c_driver = false;
+	touch_owns_i2c_bus = false;
 
 	if (touch_owns_spi_bus) {
 		esp_err_t res = spi_bus_free(touch_spi_host);
@@ -222,39 +225,31 @@ static esp_err_t touch_esp_lcd_get_data(lispif_touch_point_data_t *data, uint8_t
 }
 
 static esp_err_t touch_init_i2c_bus(int sda, int scl, uint32_t freq) {
-	i2c_config_t i2c_conf = {
-			.mode = I2C_MODE_MASTER,
-			.sda_io_num = sda,
-			.scl_io_num = scl,
-			.sda_pullup_en = GPIO_PULLUP_ENABLE,
-			.scl_pullup_en = GPIO_PULLUP_ENABLE,
-			.master.clk_speed = freq,
+	touch_i2c_bus = NULL;
+	touch_owns_i2c_bus = false;
+
+	if (i2c_master_get_bus_handle(TOUCH_I2C_PORT, &touch_i2c_bus) == ESP_OK && touch_i2c_bus) {
+		return ESP_OK;
+	}
+
+	i2c_master_bus_config_t bus_cfg = {
+		.i2c_port = TOUCH_I2C_PORT,
+		.sda_io_num = sda,
+		.scl_io_num = scl,
+		.clk_source = I2C_CLK_SRC_DEFAULT,
+		.glitch_ignore_cnt = 7,
+		.intr_priority = 0,
+		.trans_queue_depth = 4,
+		.flags.enable_internal_pullup = 1,
 	};
 
-	bool reuse_existing_i2c = false;
-	esp_err_t cfg_res = i2c_param_config(TOUCH_I2C_PORT, &i2c_conf);
-	if (cfg_res == ESP_ERR_INVALID_ARG) {
-		i2c_conf.sda_pullup_en = GPIO_PULLUP_DISABLE;
-		i2c_conf.scl_pullup_en = GPIO_PULLUP_DISABLE;
-		cfg_res = i2c_param_config(TOUCH_I2C_PORT, &i2c_conf);
-	}
-	if (cfg_res != ESP_OK) {
-		if (cfg_res != ESP_FAIL && cfg_res != ESP_ERR_INVALID_STATE) {
-			return cfg_res;
-		}
-		reuse_existing_i2c = true;
+	(void)freq;
+	esp_err_t res = i2c_new_master_bus(&bus_cfg, &touch_i2c_bus);
+	if (res == ESP_OK) {
+		touch_owns_i2c_bus = true;
 	}
 
-	esp_err_t res = i2c_driver_install(TOUCH_I2C_PORT, i2c_conf.mode, 0, 0, 0);
-	if (res == ESP_ERR_INVALID_STATE) {
-		reuse_existing_i2c = true;
-	} else if (res != ESP_OK) {
-		return res;
-	}
-
-	touch_owns_i2c_driver = !reuse_existing_i2c;
-	touch_i2c_port = TOUCH_I2C_PORT;
-	return ESP_OK;
+	return res;
 }
 
 static esp_err_t touch_init_i2c_esp_lcd(int sda, int scl, int rst, int int_pin, uint16_t width, uint16_t height, uint32_t freq, esp_lcd_panel_io_i2c_config_t io_conf, void *driver_data, touch_i2c_create_fn_t create_fn, lispif_touch_driver_t *driver) {
@@ -274,8 +269,8 @@ static esp_err_t touch_init_i2c_esp_lcd(int sda, int scl, int rst, int int_pin, 
 		return res;
 	}
 
-	io_conf.scl_speed_hz = 0;
-	res = esp_lcd_new_panel_io_i2c(TOUCH_I2C_PORT, &io_conf, &touch_io_handle);
+	io_conf.scl_speed_hz = freq;
+	res = esp_lcd_new_panel_io_i2c(touch_i2c_bus, &io_conf, &touch_io_handle);
 	if (res != ESP_OK) {
 		touch_esp_lcd_deinit();
 		return res;
@@ -515,6 +510,11 @@ void lispif_touch_shutdown(void) {
 static void touch_event_task(void *arg) {
 	(void)arg;
 
+	lispif_touch_point_data_t prev_point = {0};
+	bool prev_pressed = false;
+	bool has_prev = false;
+	TickType_t last_emit_tick = 0;
+
 	for (;;) {
 		if (touch_has_int) {
 			ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -528,21 +528,45 @@ static void touch_event_task(void *arg) {
 
 		lispif_touch_point_data_t point = {0};
 		bool pressed = false;
+		bool got_data = false;
 
-		xSemaphoreTake(touch_mutex, portMAX_DELAY);
+		if (xSemaphoreTake(touch_mutex, pdMS_TO_TICKS(TOUCH_EVENT_LOCK_TIMEOUT_MS)) != pdTRUE) {
+			continue;
+		}
+
 		if (touch_driver_loaded()) {
 			esp_err_t res = touch_driver.read_data();
 			if (res == ESP_OK) {
 				uint8_t point_cnt = 0;
 				if (touch_driver.get_data(&point, &point_cnt, 1) == ESP_OK) {
 					pressed = point_cnt > 0;
+					got_data = true;
 				}
 			}
 		}
 		xSemaphoreGive(touch_mutex);
 
-		if (event_touch_int_en) {
+		if (!got_data || !event_touch_int_en) {
+			continue;
+		}
+
+		bool changed = !has_prev || pressed != prev_pressed;
+		if (!changed && pressed) {
+			changed = point.x != prev_point.x ||
+					point.y != prev_point.y ||
+					point.strength != prev_point.strength ||
+					point.track_id != prev_point.track_id;
+		}
+
+		TickType_t now = xTaskGetTickCount();
+		bool period_ok = !has_prev || (now - last_emit_tick) >= pdMS_TO_TICKS(TOUCH_EVENT_MIN_PERIOD_MS);
+
+		if (changed && period_ok) {
 			touch_emit_event(pressed, &point);
+			prev_point = point;
+			prev_pressed = pressed;
+			has_prev = true;
+			last_emit_tick = now;
 		}
 	}
 }

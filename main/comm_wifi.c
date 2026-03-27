@@ -86,14 +86,24 @@ static const char *wifi_reason_to_str(wifi_err_reason_t reason) {
 			return "AUTH_EXPIRE";
 		case WIFI_REASON_AUTH_LEAVE:
 			return "AUTH_LEAVE";
+		#ifdef WIFI_REASON_ASSOC_EXPIRE
 		case WIFI_REASON_ASSOC_EXPIRE:
 			return "ASSOC_EXPIRE";
+		#endif
+		#ifdef WIFI_REASON_ASSOC_NOT_AUTHED
+		case WIFI_REASON_ASSOC_NOT_AUTHED:
+			return "ASSOC_EXPIRE";
+		#endif
 		case WIFI_REASON_ASSOC_TOOMANY:
 			return "ASSOC_TOOMANY";
+		#ifdef WIFI_REASON_NOT_AUTHED
 		case WIFI_REASON_NOT_AUTHED:
 			return "NOT_AUTHED";
+		#endif
+		#ifdef WIFI_REASON_NOT_ASSOCED
 		case WIFI_REASON_NOT_ASSOCED:
 			return "NOT_ASSOCED";
+		#endif
 		case WIFI_REASON_ASSOC_LEAVE:
 			return "ASSOC_LEAVE";
 		case WIFI_REASON_ASSOC_NOT_AUTHED:
