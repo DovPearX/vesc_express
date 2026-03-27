@@ -1,7 +1,7 @@
 ## IDF Component Manager Manifest File
 dependencies:
   espressif/dhara: ^0.1.0
-  espressif/spi_nand_flash: ^0.1.0
+  espressif/spi_nand_flash: ^0.20.0
   espressif/esp_lcd_touch: ^1.2.1
   espressif/esp_lcd_touch_cst816s: ^1.1.1
   espressif/esp_lcd_touch_gt911: ^1.2.0
