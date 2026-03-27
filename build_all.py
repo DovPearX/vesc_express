@@ -160,13 +160,13 @@ def build_target(config, output_dir, prev_target=None, idx=0, total=0):
     # - Existing build, target changed: use set-target (which handles fullclean properly)
     # - Existing build, same target: skip, go straight to build
     if is_fresh:
-        cmd_base = ["idf.py", "-B", build_dir, f"-DIDF_TARGET={config['target']}", f"-DHW_NAME={config['name']}"]
+        cmd_base = ["idf.py", "-B", build_dir, f"-DIDF_TARGET={config['target'][0:7]}", f"-DHW_NAME={config['name']}"]
     else:
         cmd_base = ["idf.py", "-B", build_dir, f"-DHW_NAME={config['name']}"]
         if prev_target != config['target']:
             set_status(f"{idx}/{total} | {config['name']} ({config['target']}) | Setting target")
             print_status(f"--> Chip target changed ({prev_target} -> {config['target']}), setting target...")
-            res = run_streamed(cmd_base + ["set-target", config['target']], shell=shell)
+            res = run_streamed(cmd_base + ["set-target", config['target'][0:7]], shell=shell)
             if res.returncode != 0:
                 return False
 
@@ -181,7 +181,7 @@ def build_target(config, output_dir, prev_target=None, idx=0, total=0):
         # 3. Copy artifacts
         set_status(f"{idx}/{total} | {config['name']} ({config['target']}) | Copying artifacts")
         try:
-            target_output_dir = os.path.join(output_dir, config['target'], config['name'])
+            target_output_dir = os.path.join(output_dir, config['target'][0:7], config['name'])
             os.makedirs(target_output_dir, exist_ok=True)
 
             # Source paths
@@ -256,13 +256,13 @@ REPLACEABLE_STRING
                 success_count += 1
 
                 target_res_string = res_firmwares_string.replace("TARGET_DESTINATION_DIRECTORY",
-                    config['target']).replace("TARGET_DESTINATION_FILENAME", config['name'] + "/bootloader.bin")
+                    config['target'][0:7]).replace("TARGET_DESTINATION_FILENAME", config['name'] + "/bootloader.bin")
                 res_string = res_string + target_res_string
                 target_res_string = res_firmwares_string.replace("TARGET_DESTINATION_DIRECTORY",
-                    config['target']).replace("TARGET_DESTINATION_FILENAME", config['name'] + "/partition-table.bin")
+                    config['target'][0:7]).replace("TARGET_DESTINATION_FILENAME", config['name'] + "/partition-table.bin")
                 res_string = res_string + target_res_string
                 target_res_string = res_firmwares_string.replace("TARGET_DESTINATION_DIRECTORY",
-                    config['target']).replace("TARGET_DESTINATION_FILENAME", config['name'] + "/vesc_express.bin")
+                    config['target'][0:7]).replace("TARGET_DESTINATION_FILENAME", config['name'] + "/vesc_express.bin")
                 res_string = res_string + target_res_string
             else:
                 failed_configs.append(config['name'])
