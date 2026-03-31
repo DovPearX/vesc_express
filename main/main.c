@@ -123,6 +123,7 @@ void app_main(void) {
 #ifdef HW_EARLY_LBM_INIT
 	HW_INIT_HOOK();
 	lispif_init();
+	lispif_imu_autostart_if_configured();
 	HW_POST_LISPIF_HOOK();
 #endif
 
@@ -167,6 +168,7 @@ void app_main(void) {
 #ifndef HW_EARLY_LBM_INIT
 	HW_INIT_HOOK();
 	lispif_init();
+	lispif_imu_autostart_if_configured();
 	HW_POST_LISPIF_HOOK();
 #endif
 

@@ -4988,6 +4988,54 @@ static lbm_value ext_as504x_angle(lbm_value *args, lbm_uint argn) {
 // IMU
 static imu_config imu_cfg;
 
+void lispif_imu_autostart_if_configured(void) {
+#if defined(HW_IMU_SDA) && defined(HW_IMU_SCL) && defined(HW_IMU_TYPE)
+	if (!i2c_mutex_init_done) {
+		i2c_mutex = xSemaphoreCreateMutex();
+		i2c_mutex_init_done = true;
+	}
+
+	i2c_config_t conf = {
+			.mode = I2C_MODE_MASTER,
+			.sda_io_num = HW_IMU_SDA,
+			.scl_io_num = HW_IMU_SCL,
+			.sda_pullup_en = GPIO_PULLUP_ENABLE,
+			.scl_pullup_en = GPIO_PULLUP_ENABLE,
+			.master.clk_speed = 400000,
+	};
+
+#ifdef HW_IMU_I2C_SPEED
+	conf.master.clk_speed = HW_IMU_I2C_SPEED;
+#endif
+
+	esp_err_t res = i2c_param_config(0, &conf);
+	if (res != ESP_OK) {
+		commands_printf("IMU autostart: i2c_param_config failed (%d)", (int)res);
+		return;
+	}
+
+	res = i2c_driver_install(0, conf.mode, 0, 0, 0);
+	if (res != ESP_OK && res != ESP_ERR_INVALID_STATE) {
+		commands_printf("IMU autostart: i2c_driver_install failed (%d)", (int)res);
+		return;
+	}
+
+	i2c_started = true;
+
+	imu_stop();
+	memset(&imu_cfg, 0, sizeof(imu_cfg));
+	imu_config_load(&imu_cfg);
+	imu_cfg.type = HW_IMU_TYPE;
+	imu_init(&imu_cfg, i2c_mutex);
+
+	commands_printf("IMU autostart: type=%d sda=%d scl=%d rate=%d",
+			imu_cfg.type,
+			(int)conf.sda_io_num,
+			(int)conf.scl_io_num,
+			imu_cfg.sample_rate_hz);
+#endif
+}
+
 static lbm_value ext_imu_start(lbm_value *args, lbm_uint argn) {
 	if (argn > 1) {
 		return ENC_SYM_TERROR;

@@ -69,6 +69,16 @@ typedef struct {
 #define PIN_GND					15
 #define PIN_POWER				7
 
+// UART
+#define UART_NUM					0
+#define UART_BAUDRATE				115200
+#define UART_TX						6
+#define UART_RX						7
+
+#define HW_IMU_SDA 18
+#define HW_IMU_SCL 17
+#define HW_IMU_TYPE IMU_TYPE_EXTERNAL_MPU9X50
+
 // Functions
 void hw_init(void);
 

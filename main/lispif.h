@@ -45,6 +45,7 @@ void lispif_add_dyn_load_callback(bool (*p_func)(const char*, const char**));
 bool lispif_is_eval_task(void);
 
 void lispif_load_vesc_extensions(bool main_found);
+void lispif_imu_autostart_if_configured(void);
 char* lispif_print_prefix(void);
 char* lispif_fw_name(void);
 

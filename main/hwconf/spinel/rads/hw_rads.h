@@ -82,6 +82,10 @@ typedef struct {
 #define QMI_INT2		 	7
 #define QMI_I2C_ADDR		0x6B
 
+#define HW_IMU_SDA 47
+#define HW_IMU_SCL 48
+#define HW_IMU_TYPE IMU_TYPE_EXTERNAL_QMI8658
+
 // Functions
 void hw_init(void);
 
