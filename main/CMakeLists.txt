@@ -92,6 +92,7 @@ set(COMPONENT_SRCS
 "drivers/enc_as504x.c"
 "drivers/imu/imu.c"
 "drivers/imu/lsm6ds3.c"
+"drivers/imu/qmi8658.c"
 "drivers/imu/ahrs.c"
 
 "lowzip/lowzip.c"
@@ -118,6 +119,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "hwconf/rescue"
 "hwconf/avaspark"
 "hwconf/spinel/rads"
+"hwconf/spinel/echo"
 
 "lispBM"
 "lispBM/include"

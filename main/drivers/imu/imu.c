@@ -20,12 +20,16 @@
 #include "imu.h"
 #include "ahrs.h"
 #include "commands.h"
+#include "buffer.h"
 #include "lsm6ds3.h"
+#include "qmi8658.h"
 #include "utils.h"
 #include "digital_filter.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 
 #include <math.h>
 #include <string.h>
@@ -81,16 +85,17 @@ void imu_init(imu_config *set, SemaphoreHandle_t i2c_mutex) {
 
 	lsm6ds3_set_rate_hz(set->sample_rate_hz);
 	lsm6ds3_set_filter(set->filter);
+	qmi8658_set_rate_hz(set->sample_rate_hz);
+	qmi8658_set_filter(set->filter);
 
-	if (set->type == IMU_TYPE_INTERNAL) {
-
-	} else if (set->type == IMU_TYPE_EXTERNAL_ICM20948) {
+	if (set->type == IMU_TYPE_EXTERNAL_ICM20948) {
 
 	} else if (set->type == IMU_TYPE_EXTERNAL_BMI160) {
 
 	} else if(set->type == IMU_TYPE_EXTERNAL_LSM6DS3) {
 		imu_init_lsm6ds3();
-	} else if (set->type == IMU_TYPE_EXTERNAL_BMI160) {
+	} else if (set->type == IMU_TYPE_EXTERNAL_QMI8658) {
+		imu_init_qmi8658();
 
 	}
 }
@@ -133,8 +138,14 @@ void imu_init_lsm6ds3(void) {
 	lsm6ds3_set_read_callback(imu_read_callback);
 }
 
+void imu_init_qmi8658(void) {
+	qmi8658_init();
+	qmi8658_set_read_callback(imu_read_callback);
+}
+
 void imu_stop(void) {
 	lsm6ds3_stop();
+	qmi8658_stop();
 }
 
 bool imu_startup_done(void) {
@@ -457,4 +468,139 @@ static void imu_read_callback(float *accel, float *gyro, float *mag) {
 	if (m_read_callback) {
 		m_read_callback(m_accel, gyro_rad, m_mag, dt);
 	}
+}
+
+int32_t imu_config_serialize(uint8_t *buffer, const imu_config *conf) {
+	int32_t ind = 0;
+	
+	buffer[ind++] = conf->type;
+	buffer[ind++] = conf->mode;
+	buffer[ind++] = conf->filter;
+	buffer_append_float16(buffer, conf->accel_lowpass_filter_x, 1, &ind);
+	buffer_append_float16(buffer, conf->accel_lowpass_filter_y, 1, &ind);
+	buffer_append_float16(buffer, conf->accel_lowpass_filter_z, 1, &ind);
+	buffer_append_float16(buffer, conf->gyro_lowpass_filter, 1, &ind);
+	buffer_append_uint16(buffer, conf->sample_rate_hz, &ind);
+	buffer[ind++] = conf->use_magnetometer;
+	buffer_append_float32_auto(buffer, conf->accel_confidence_decay, &ind);
+	buffer_append_float32_auto(buffer, conf->mahony_kp, &ind);
+	buffer_append_float32_auto(buffer, conf->mahony_ki, &ind);
+	buffer_append_float32_auto(buffer, conf->madgwick_beta, &ind);
+	buffer_append_float32_auto(buffer, conf->rot_roll, &ind);
+	buffer_append_float32_auto(buffer, conf->rot_pitch, &ind);
+	buffer_append_float32_auto(buffer, conf->rot_yaw, &ind);
+	buffer_append_float32_auto(buffer, conf->accel_offsets[0], &ind);
+	buffer_append_float32_auto(buffer, conf->accel_offsets[1], &ind);
+	buffer_append_float32_auto(buffer, conf->accel_offsets[2], &ind);
+	buffer_append_float32_auto(buffer, conf->gyro_offsets[0], &ind);
+	buffer_append_float32_auto(buffer, conf->gyro_offsets[1], &ind);
+	buffer_append_float32_auto(buffer, conf->gyro_offsets[2], &ind);
+	
+	return ind;
+}
+
+bool imu_config_deserialize(const uint8_t *buffer, imu_config *conf) {
+	int32_t ind = 0;
+	
+	conf->type = buffer[ind++];
+	conf->mode = buffer[ind++];
+	conf->filter = buffer[ind++];
+	conf->accel_lowpass_filter_x = buffer_get_float16(buffer, 1, &ind);
+	conf->accel_lowpass_filter_y = buffer_get_float16(buffer, 1, &ind);
+	conf->accel_lowpass_filter_z = buffer_get_float16(buffer, 1, &ind);
+	conf->gyro_lowpass_filter = buffer_get_float16(buffer, 1, &ind);
+	conf->sample_rate_hz = buffer_get_uint16(buffer, &ind);
+	conf->use_magnetometer = buffer[ind++];
+	conf->accel_confidence_decay = buffer_get_float32_auto(buffer, &ind);
+	conf->mahony_kp = buffer_get_float32_auto(buffer, &ind);
+	conf->mahony_ki = buffer_get_float32_auto(buffer, &ind);
+	conf->madgwick_beta = buffer_get_float32_auto(buffer, &ind);
+	conf->rot_roll = buffer_get_float32_auto(buffer, &ind);
+	conf->rot_pitch = buffer_get_float32_auto(buffer, &ind);
+	conf->rot_yaw = buffer_get_float32_auto(buffer, &ind);
+	conf->accel_offsets[0] = buffer_get_float32_auto(buffer, &ind);
+	conf->accel_offsets[1] = buffer_get_float32_auto(buffer, &ind);
+	conf->accel_offsets[2] = buffer_get_float32_auto(buffer, &ind);
+	conf->gyro_offsets[0] = buffer_get_float32_auto(buffer, &ind);
+	conf->gyro_offsets[1] = buffer_get_float32_auto(buffer, &ind);
+	conf->gyro_offsets[2] = buffer_get_float32_auto(buffer, &ind);
+	
+	return true;
+}
+
+void imu_config_set_defaults(imu_config *conf) {
+	conf->type = IMU_TYPE_EXTERNAL_LSM6DS3;
+	conf->mode = AHRS_MODE_MAHONY;        
+	conf->filter = IMU_FILTER_MEDIUM;
+	conf->accel_lowpass_filter_x = 40.0f;
+	conf->accel_lowpass_filter_y = 40.0f;
+	conf->accel_lowpass_filter_z = 40.0f;
+	conf->gyro_lowpass_filter = 80.0f;
+	conf->sample_rate_hz = 200;
+	conf->use_magnetometer = true;
+	conf->accel_confidence_decay = 0.01f;
+	conf->mahony_kp = 0.3f;              
+	conf->mahony_ki = 0.0f;        
+	conf->madgwick_beta = 0.1f;
+	conf->rot_roll = 0.0f;
+	conf->rot_pitch = 0.0f;
+	conf->rot_yaw = 0.0f;
+	conf->accel_offsets[0] = 0.0f;
+	conf->accel_offsets[1] = 0.0f;
+	conf->accel_offsets[2] = 0.0f;
+	conf->gyro_offsets[0] = 0.0f;
+	conf->gyro_offsets[1] = 0.0f;
+	conf->gyro_offsets[2] = 0.0f;
+}
+
+bool imu_config_load(imu_config *conf) {
+	if (conf == NULL) {
+		return false;
+	}
+
+	imu_config_set_defaults(conf);
+
+	nvs_handle_t handle;
+	esp_err_t err = nvs_open("imu", NVS_READONLY, &handle);
+	if (err != ESP_OK) {
+		return true;
+	}
+
+	uint8_t buffer[256];
+	size_t size = sizeof(buffer);
+	err = nvs_get_blob(handle, "config", buffer, &size);
+	nvs_close(handle);
+
+	if (err != ESP_OK || size == 0 || size > sizeof(buffer)) {
+		return true;
+	}
+
+	imu_config_deserialize(buffer, conf);
+
+	return true;
+}
+
+bool imu_config_save(const imu_config *conf) {
+	nvs_handle_t handle;
+	esp_err_t err;
+	
+	uint8_t buffer[256];
+	int32_t size = imu_config_serialize(buffer, conf);
+	
+	if (size <= 0 || size > (int32_t)sizeof(buffer)) {
+		return false;
+	}
+	
+	err = nvs_open("imu", NVS_READWRITE, &handle);
+	if (err != ESP_OK) {
+		return false;
+	}
+	
+	err = nvs_set_blob(handle, "config", buffer, (size_t)size);
+	if (err == ESP_OK) {
+		err = nvs_commit(handle);
+	}
+	
+	nvs_close(handle);
+	return (err == ESP_OK);
 }

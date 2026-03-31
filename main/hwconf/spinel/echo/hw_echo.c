@@ -1,56 +1,8 @@
 #include "hw_echo.h"
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "driver/i2c_master.h"
-#include "esp_rom_gpio.h"
-#include "soc/gpio_sig_map.h"
-#include "driver/gpio.h"
-#include "esp_log.h"
-#include "lispif_disp_extensions.h"
-#include "disp_axs15231.h"
-#include "esp_wifi.h"
-#include "esp_bt.h"
-#include "esp_bt_main.h"
-#include "esp_sleep.h"
-
 #include "lispif.h"
 #include "lispbm.h"
-#include "extensions/display_extensions.h"
-#include "terminal.h"
-#include "commands.h"
-#include "utils.h"
-
-static lbm_value ext_disp_init(lbm_value *args, lbm_uint argn) {
-    (void)args; (void)argn;
-
-    disp_axs15231_init(
-            DISP_SD0,
-            DISP_SD1,
-            DISP_SD2,
-            DISP_SD3,
-            DISP_CLK,
-            DISP_CS,
-            DISP_RESET,
-            40);
-
-    lbm_display_extensions_set_callbacks(
-            disp_axs15231_render_image,
-            disp_axs15231_clear,
-            disp_axs15231_reset
-    );
-
-    disp_axs15231_reset();
-
-    return ENC_SYM_TRUE;
-}
-
-static void load_extensions(bool main_found) {
-    if (!main_found) {
-        lbm_add_extension("disp-init", ext_disp_init);
-    }
-}
 
 void hw_init(void) {
-    lispif_add_ext_load_callback(load_extensions);
+
 }

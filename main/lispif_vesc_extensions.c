@@ -4986,27 +4986,80 @@ static lbm_value ext_as504x_angle(lbm_value *args, lbm_uint argn) {
 }
 
 // IMU
-
 static imu_config imu_cfg;
 
-static lbm_value ext_imu_start_lsm6(lbm_value *args, lbm_uint argn) {
-	lbm_value res = ext_i2c_start(args, argn);
+static lbm_value ext_imu_start(lbm_value *args, lbm_uint argn) {
+	if (argn > 3) {
+		return ENC_SYM_TERROR;
+	}
 
-	if (res != ENC_SYM_TRUE) {
-		return res;
+	int sda = 7;
+	int scl = 6;
+	int default_imu_type = IMU_TYPE_EXTERNAL_LSM6DS3;
+
+	if (argn >= 1) {
+		if (!lbm_is_number(args[0])) {
+			return ENC_SYM_TERROR;
+		}
+		default_imu_type = lbm_dec_as_i32(args[0]);
+	}
+
+	if (argn >= 3) {
+		if (!lbm_is_number(args[1]) || !lbm_is_number(args[2])) {
+			return ENC_SYM_TERROR;
+		}
+		sda = lbm_dec_as_i32(args[1]);
+		scl = lbm_dec_as_i32(args[2]);
+	}
+
+	if (!utils_gpio_is_valid(sda) || !utils_gpio_is_valid(scl)) {
+		lbm_set_error_reason(string_pin_invalid);
+		return ENC_SYM_EERROR;
+	}
+
+	i2c_config_t conf = {
+		.mode = I2C_MODE_MASTER,
+		.sda_io_num = sda,
+		.scl_io_num = scl,
+		.sda_pullup_en = GPIO_PULLUP_ENABLE,
+		.scl_pullup_en = GPIO_PULLUP_ENABLE,
+		.master.clk_speed = 400000,
+	};
+
+	commands_printf("imu-start requested: type=%d, sda=%d, scl=%d", default_imu_type, sda, scl);
+
+	if (!i2c_started) {
+		esp_err_t err = i2c_param_config(0, &conf);
+		if (err != ESP_OK) {
+			commands_printf("imu-start: i2c_param_config failed %d", err);
+			return ENC_SYM_EERROR;
+		}
+
+		err = i2c_driver_install(0, conf.mode, 0, 0, 0);
+		if (err != ESP_OK && err != ESP_ERR_INVALID_STATE && err != ESP_FAIL) {
+			commands_printf("imu-start: i2c_driver_install failed %d", err);
+			return ENC_SYM_EERROR;
+		}
+
+		if (err == ESP_OK || err == ESP_ERR_INVALID_STATE || err == ESP_FAIL) {
+			i2c_started = true;
+			commands_printf("imu-start: i2c driver installed or already running (err=%d)", err);
+		}
+	} else {
+		commands_printf("imu-start: i2c already started, skipping install");
 	}
 
 	memset(&imu_cfg, 0, sizeof(imu_cfg));
-	imu_cfg.type = IMU_TYPE_EXTERNAL_LSM6DS3;
-	imu_cfg.sample_rate_hz = 1000;
-	imu_cfg.use_magnetometer = true;
-	imu_cfg.filter = IMU_FILTER_MEDIUM;
-	imu_cfg.accel_confidence_decay = 1.0;
-	imu_cfg.mahony_kp = 0.3;
-	imu_cfg.mahony_ki = 0.0;
-	imu_cfg.madgwick_beta = 0.1;
+	imu_config_load(&imu_cfg);
+
+	if (argn >= 1 && lbm_is_number(args[0])) {
+		imu_cfg.type = default_imu_type;
+	} else if (imu_cfg.type == IMU_TYPE_OFF) {
+		imu_cfg.type = IMU_TYPE_EXTERNAL_LSM6DS3;
+	}
 
 	imu_init(&imu_cfg, i2c_mutex);
+	commands_printf("imu-init done: type=%d, mode=%d, rate=%d", imu_cfg.type, imu_cfg.mode, imu_cfg.sample_rate_hz);
 
 	return ENC_SYM_TRUE;
 }
@@ -5015,6 +5068,45 @@ static lbm_value ext_imu_stop(lbm_value *args, lbm_uint argn) {
 	(void)args; (void)argn;
 	imu_stop();
 	return ENC_SYM_TRUE;
+}
+
+static lbm_value ext_imu_calibrate(lbm_value *args, lbm_uint argn) {
+	if (argn > 1) {
+		return ENC_SYM_TERROR;
+	}
+
+	float yaw = 0.0f;
+	if (argn == 1) {
+		if (!lbm_is_number(args[0])) {
+			return ENC_SYM_TERROR;
+		}
+
+		yaw = lbm_dec_as_float(args[0]);
+	}
+
+	float imu_cal[9];
+	imu_get_calibration(yaw, imu_cal);
+
+	if (imu_config_load(&imu_cfg)) {
+		imu_cfg.rot_roll = imu_cal[0];
+		imu_cfg.rot_pitch = imu_cal[1];
+		imu_cfg.rot_yaw = imu_cal[2];
+		imu_cfg.accel_offsets[0] = imu_cal[3];
+		imu_cfg.accel_offsets[1] = imu_cal[4];
+		imu_cfg.accel_offsets[2] = imu_cal[5];
+		imu_cfg.gyro_offsets[0] = imu_cal[6];
+		imu_cfg.gyro_offsets[1] = imu_cal[7];
+		imu_cfg.gyro_offsets[2] = imu_cal[8];
+
+		imu_config_save(&imu_cfg);
+	}
+
+	lbm_value res = ENC_SYM_NIL;
+	for (int i = 8; i >= 0; i--) {
+		res = lbm_cons(lbm_enc_float(imu_cal[i]), res);
+	}
+
+	return res;
 }
 
 static lbm_value ext_get_imu_rpy(lbm_value *args, lbm_uint argn) {
@@ -6773,8 +6865,9 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_add_extension("as504x-angle", ext_as504x_angle);
 
 		// IMU
-		lbm_add_extension("imu-start-lsm6", ext_imu_start_lsm6);
+		lbm_add_extension("imu-start", ext_imu_start);
 		lbm_add_extension("imu-stop", ext_imu_stop);
+		lbm_add_extension("imu-calibrate", ext_imu_calibrate);
 		lbm_add_extension("get-imu-rpy", ext_get_imu_rpy);
 		lbm_add_extension("get-imu-quat", ext_get_imu_quat);
 		lbm_add_extension("get-imu-acc", ext_get_imu_acc);

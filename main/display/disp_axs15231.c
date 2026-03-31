@@ -40,7 +40,7 @@ static int m_display_height = DISPLAY_HEIGHT_PHYS;
 static int m_rotation = 0;
 
 #define CHUNK_LINES_LOW	20
-#define CHUNK_LINES_HIGH 80
+#define CHUNK_LINES_HIGH 40
 
 #define PIX_BUF_PIXELS	(DISPLAY_HEIGHT_PHYS * CHUNK_LINES_HIGH)
 #define PIX_BUF_BYTES	(PIX_BUF_PIXELS * 2)
@@ -301,11 +301,11 @@ void disp_axs15231_init(int pin_sd0, int pin_sd1, int pin_sd2, int pin_sd3,
 	const spi_bus_config_t buscfg = AXS15231B_PANEL_BUS_QSPI_CONFIG(
 			pin_clk, pin_sd0, pin_sd1, pin_sd2, pin_sd3,
 			DISPLAY_WIDTH_PHYS * DISPLAY_HEIGHT_PHYS * 2);
-	spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
+	spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO);
 
 	const esp_lcd_panel_io_spi_config_t io_cfg =
 			AXS15231B_PANEL_IO_QSPI_CONFIG(pin_cs, NULL, NULL);
-	esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &io_cfg, &m_io);
+	esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI3_HOST, &io_cfg, &m_io);
 
 	static axs15231b_vendor_config_t vendor_config = {
 		.init_cmds      = lcd_init_cmds,
