@@ -2580,6 +2580,13 @@ static bool i2c_started = false;
 static SemaphoreHandle_t i2c_mutex;
 static bool i2c_mutex_init_done = false;
 
+static void i2c_stop_driver(void) {
+	if (i2c_started) {
+		i2c_driver_delete(0);
+		i2c_started = false;
+	}
+}
+
 static lbm_value ext_i2c_start(lbm_value *args, lbm_uint argn) {
 	if (argn > 3) {
 		return ENC_SYM_EERROR;
@@ -5026,28 +5033,25 @@ static lbm_value ext_imu_start(lbm_value *args, lbm_uint argn) {
 		.master.clk_speed = 400000,
 	};
 
-	commands_printf("imu-start requested: type=%d, sda=%d, scl=%d", default_imu_type, sda, scl);
+	commands_printf_lisp("imu-start requested: type=%d, sda=%d, scl=%d", default_imu_type, sda, scl);
 
-	if (!i2c_started) {
-		esp_err_t err = i2c_param_config(0, &conf);
-		if (err != ESP_OK) {
-			commands_printf("imu-start: i2c_param_config failed %d", err);
-			return ENC_SYM_EERROR;
-		}
+	imu_stop();
+	i2c_stop_driver();
 
-		err = i2c_driver_install(0, conf.mode, 0, 0, 0);
-		if (err != ESP_OK && err != ESP_ERR_INVALID_STATE && err != ESP_FAIL) {
-			commands_printf("imu-start: i2c_driver_install failed %d", err);
-			return ENC_SYM_EERROR;
-		}
-
-		if (err == ESP_OK || err == ESP_ERR_INVALID_STATE || err == ESP_FAIL) {
-			i2c_started = true;
-			commands_printf("imu-start: i2c driver installed or already running (err=%d)", err);
-		}
-	} else {
-		commands_printf("imu-start: i2c already started, skipping install");
+	esp_err_t err = i2c_param_config(0, &conf);
+	if (err != ESP_OK) {
+		commands_printf_lisp("imu-start: i2c_param_config failed %d", err);
+		return ENC_SYM_EERROR;
 	}
+
+	err = i2c_driver_install(0, conf.mode, 0, 0, 0);
+	if (err != ESP_OK) {
+		commands_printf_lisp("imu-start: i2c_driver_install failed %d", err);
+		return ENC_SYM_EERROR;
+	}
+
+	i2c_started = true;
+	commands_printf_lisp("imu-start: i2c driver installed on sda=%d scl=%d", sda, scl);
 
 	memset(&imu_cfg, 0, sizeof(imu_cfg));
 	imu_config_load(&imu_cfg);
@@ -5059,7 +5063,7 @@ static lbm_value ext_imu_start(lbm_value *args, lbm_uint argn) {
 	}
 
 	imu_init(&imu_cfg, i2c_mutex);
-	commands_printf("imu-init done: type=%d, mode=%d, rate=%d", imu_cfg.type, imu_cfg.mode, imu_cfg.sample_rate_hz);
+	commands_printf_lisp("imu-init done: type=%d, mode=%d, rate=%d", imu_cfg.type, imu_cfg.mode, imu_cfg.sample_rate_hz);
 
 	return ENC_SYM_TRUE;
 }
@@ -5067,6 +5071,7 @@ static lbm_value ext_imu_start(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_imu_stop(lbm_value *args, lbm_uint argn) {
 	(void)args; (void)argn;
 	imu_stop();
+	i2c_stop_driver();
 	return ENC_SYM_TRUE;
 }
 

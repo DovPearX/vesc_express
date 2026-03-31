@@ -21,6 +21,7 @@
 #include "ahrs.h"
 #include "commands.h"
 #include "buffer.h"
+#include "bmi160_wrapper.h"
 #include "lsm6ds3.h"
 #include "qmi8658.h"
 #include "utils.h"
@@ -85,12 +86,16 @@ void imu_init(imu_config *set, SemaphoreHandle_t i2c_mutex) {
 
 	lsm6ds3_set_rate_hz(set->sample_rate_hz);
 	lsm6ds3_set_filter(set->filter);
+	bmi160_wrapper_set_rate_hz(set->sample_rate_hz);
+	bmi160_wrapper_set_filter(set->filter);
 	qmi8658_set_rate_hz(set->sample_rate_hz);
 	qmi8658_set_filter(set->filter);
 
 	if (set->type == IMU_TYPE_EXTERNAL_ICM20948) {
 
 	} else if (set->type == IMU_TYPE_EXTERNAL_BMI160) {
+		bmi160_wrapper_init();
+		bmi160_wrapper_set_read_callback(imu_read_callback);
 
 	} else if(set->type == IMU_TYPE_EXTERNAL_LSM6DS3) {
 		imu_init_lsm6ds3();
@@ -145,6 +150,7 @@ void imu_init_qmi8658(void) {
 
 void imu_stop(void) {
 	lsm6ds3_stop();
+	bmi160_wrapper_stop();
 	qmi8658_stop();
 }
 

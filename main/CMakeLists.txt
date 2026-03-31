@@ -91,8 +91,10 @@ set(COMPONENT_SRCS
 "drivers/spi_bb.c"
 "drivers/enc_as504x.c"
 "drivers/imu/imu.c"
+"drivers/imu/bmi160_wrapper.c"
 "drivers/imu/lsm6ds3.c"
 "drivers/imu/qmi8658.c"
+"drivers/imu/bmi160/bmi160.c"
 "drivers/imu/ahrs.c"
 
 "lowzip/lowzip.c"
@@ -132,6 +134,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "drivers"
 "drivers/bme280"
 "drivers/imu"
+"drivers/imu/bmi160"
 "lowzip"
 )
 
