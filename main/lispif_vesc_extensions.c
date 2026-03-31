@@ -2580,14 +2580,6 @@ static bool i2c_started = false;
 static SemaphoreHandle_t i2c_mutex;
 static bool i2c_mutex_init_done = false;
 
-static void i2c_stop_driver(void) {
-	if (i2c_started) {
-		i2c_driver_delete(0);
-		i2c_started = false;
-		vTaskDelay(pdMS_TO_TICKS(10));
-	}
-}
-
 static lbm_value ext_i2c_start(lbm_value *args, lbm_uint argn) {
 	if (argn > 3) {
 		return ENC_SYM_EERROR;
@@ -4997,77 +4989,37 @@ static lbm_value ext_as504x_angle(lbm_value *args, lbm_uint argn) {
 static imu_config imu_cfg;
 
 static lbm_value ext_imu_start(lbm_value *args, lbm_uint argn) {
-	if (argn > 3) {
+	if (argn > 1) {
 		return ENC_SYM_TERROR;
 	}
 
-	int sda = 7;
-	int scl = 6;
-	int default_imu_type = IMU_TYPE_EXTERNAL_LSM6DS3;
+	if (!i2c_started) {
+		lbm_set_error_reason(i2c_not_started_msg);
+		return ENC_SYM_EERROR;
+	}
+
+	int imu_type = IMU_TYPE_EXTERNAL_LSM6DS3;
 
 	if (argn >= 1) {
 		if (!lbm_is_number(args[0])) {
 			return ENC_SYM_TERROR;
 		}
-		default_imu_type = lbm_dec_as_i32(args[0]);
+		imu_type = lbm_dec_as_i32(args[0]);
 	}
-
-	if (argn >= 3) {
-		if (!lbm_is_number(args[1]) || !lbm_is_number(args[2])) {
-			return ENC_SYM_TERROR;
-		}
-		sda = lbm_dec_as_i32(args[1]);
-		scl = lbm_dec_as_i32(args[2]);
-	}
-
-	if (!utils_gpio_is_valid(sda) || !utils_gpio_is_valid(scl)) {
-		lbm_set_error_reason(string_pin_invalid);
-		return ENC_SYM_EERROR;
-	}
-
-	i2c_config_t conf = {
-		.mode = I2C_MODE_MASTER,
-		.sda_io_num = sda,
-		.scl_io_num = scl,
-		.sda_pullup_en = GPIO_PULLUP_ENABLE,
-		.scl_pullup_en = GPIO_PULLUP_ENABLE,
-		.master.clk_speed = 400000,
-	};
-
-	commands_printf_lisp("imu-start requested: type=%d, sda=%d, scl=%d", default_imu_type, sda, scl);
 
 	imu_stop();
-	i2c_stop_driver();
-	
-	i2c_driver_delete(0);
-	vTaskDelay(pdMS_TO_TICKS(20));
-
-	esp_err_t err = i2c_param_config(0, &conf);
-	if (err != ESP_OK) {
-		commands_printf_lisp("imu-start: i2c_param_config failed %d", err);
-		return ENC_SYM_EERROR;
-	}
-
-	err = i2c_driver_install(0, conf.mode, 0, 0, 0);
-	if (err != ESP_OK) {
-		commands_printf_lisp("imu-start: i2c_driver_install failed %d", err);
-		return ENC_SYM_EERROR;
-	}
-
-	i2c_started = true;
-	commands_printf_lisp("imu-start: i2c driver installed on sda=%d scl=%d", sda, scl);
 
 	memset(&imu_cfg, 0, sizeof(imu_cfg));
 	imu_config_load(&imu_cfg);
 
-	if (argn >= 1 && lbm_is_number(args[0])) {
-		imu_cfg.type = default_imu_type;
+	if (argn >= 1) {
+		imu_cfg.type = imu_type;
 	} else if (imu_cfg.type == IMU_TYPE_OFF) {
 		imu_cfg.type = IMU_TYPE_EXTERNAL_LSM6DS3;
 	}
 
 	imu_init(&imu_cfg, i2c_mutex);
-	commands_printf_lisp("imu-init done: type=%d, mode=%d, rate=%d", imu_cfg.type, imu_cfg.mode, imu_cfg.sample_rate_hz);
+	commands_printf_lisp("imu-start: type=%d, mode=%d, rate=%d", imu_cfg.type, imu_cfg.mode, imu_cfg.sample_rate_hz);
 
 	return ENC_SYM_TRUE;
 }
@@ -5075,7 +5027,6 @@ static lbm_value ext_imu_start(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_imu_stop(lbm_value *args, lbm_uint argn) {
 	(void)args; (void)argn;
 	imu_stop();
-	i2c_stop_driver();
 	return ENC_SYM_TRUE;
 }
 
