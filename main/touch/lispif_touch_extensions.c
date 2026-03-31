@@ -45,7 +45,11 @@
 #include "esp_lcd_touch_xpt2046.h"
 #include "esp_lcd_axs15231b.h"
 
+#if CONFIG_IDF_TARGET_ESP32S3
+#define TOUCH_I2C_PORT I2C_NUM_1
+#else
 #define TOUCH_I2C_PORT I2C_NUM_0
+#endif
 #define TOUCH_I2C_DEFAULT_FREQ 400000
 #define TOUCH_EVENT_TASK_STACK 2048
 #define TOUCH_EVENT_POLL_MS 50 
@@ -237,28 +241,29 @@ static esp_err_t touch_try_i2c_port(i2c_port_t port, int sda, int scl, uint32_t 
 			.master.clk_speed = freq,
 	};
 
-	bool reuse_existing_i2c = false;
+	esp_err_t res = i2c_driver_install(port, i2c_conf.mode, 0, 0, 0);
+	if (res == ESP_ERR_INVALID_STATE) {
+		*owns_driver = false;
+		return ESP_OK;
+	}
+
+	if (res != ESP_OK) {
+		return res;
+	}
+
 	esp_err_t cfg_res = i2c_param_config(port, &i2c_conf);
 	if (cfg_res == ESP_ERR_INVALID_ARG) {
 		i2c_conf.sda_pullup_en = GPIO_PULLUP_DISABLE;
 		i2c_conf.scl_pullup_en = GPIO_PULLUP_DISABLE;
 		cfg_res = i2c_param_config(port, &i2c_conf);
 	}
+
 	if (cfg_res != ESP_OK) {
-		if (cfg_res != ESP_FAIL && cfg_res != ESP_ERR_INVALID_STATE) {
-			return cfg_res;
-		}
-		reuse_existing_i2c = true;
+		i2c_driver_delete(port);
+		return cfg_res;
 	}
 
-	esp_err_t res = i2c_driver_install(port, i2c_conf.mode, 0, 0, 0);
-	if (res == ESP_ERR_INVALID_STATE) {
-		reuse_existing_i2c = true;
-	} else if (res != ESP_OK) {
-		return res;
-	}
-
-	*owns_driver = !reuse_existing_i2c;
+	*owns_driver = true;
 	return ESP_OK;
 }
 
