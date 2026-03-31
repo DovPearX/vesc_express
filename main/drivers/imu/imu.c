@@ -24,6 +24,7 @@
 #include "bmi160_wrapper.h"
 #include "lsm6ds3.h"
 #include "qmi8658.h"
+#include "mpu9x50_wrapper.h"
 #include "utils.h"
 #include "digital_filter.h"
 
@@ -90,6 +91,8 @@ void imu_init(imu_config *set, SemaphoreHandle_t i2c_mutex) {
 	bmi160_wrapper_set_filter(set->filter);
 	qmi8658_set_rate_hz(set->sample_rate_hz);
 	qmi8658_set_filter(set->filter);
+	mpu9x50_wrapper_set_rate_hz(set->sample_rate_hz);
+	mpu9x50_wrapper_set_filter(set->filter);
 
 	if (set->type == IMU_TYPE_EXTERNAL_ICM20948) {
 
@@ -101,6 +104,8 @@ void imu_init(imu_config *set, SemaphoreHandle_t i2c_mutex) {
 		imu_init_lsm6ds3();
 	} else if (set->type == IMU_TYPE_EXTERNAL_QMI8658) {
 		imu_init_qmi8658();
+	} else if (set->type == IMU_TYPE_EXTERNAL_MPU9X50) {
+		imu_init_mpu9x50();
 
 	}
 }
@@ -134,6 +139,12 @@ bool imu_i2c_tx_rx(uint8_t addr,
 void imu_reset_orientation(void) {
 	imu_ready = false;
 	init_time = xTaskGetTickCount();
+	biquad_reset(&acc_x_biquad);
+	biquad_reset(&acc_y_biquad);
+	biquad_reset(&acc_z_biquad);
+	biquad_reset(&gyro_x_biquad);
+	biquad_reset(&gyro_y_biquad);
+	biquad_reset(&gyro_z_biquad);
 	ahrs_init_attitude_info(&m_att);
 	ahrs_update_all_parameters(&m_att, 1.0, 10.0, 0.0, 2.0);
 }
@@ -148,10 +159,16 @@ void imu_init_qmi8658(void) {
 	qmi8658_set_read_callback(imu_read_callback);
 }
 
+void imu_init_mpu9x50(void) {
+	mpu9x50_wrapper_init();
+	mpu9x50_wrapper_set_read_callback(imu_read_callback);
+}
+
 void imu_stop(void) {
 	lsm6ds3_stop();
 	bmi160_wrapper_stop();
 	qmi8658_stop();
+	mpu9x50_wrapper_stop();
 }
 
 bool imu_startup_done(void) {
@@ -245,6 +262,12 @@ void imu_get_calibration(float yaw, float *imu_cal) {
 	// Override settings
 	m_settings.sample_rate_hz = 1000;
 	m_settings.mode = AHRS_MODE_MADGWICK;
+	biquad_reset(&acc_x_biquad);
+	biquad_reset(&acc_y_biquad);
+	biquad_reset(&acc_z_biquad);
+	biquad_reset(&gyro_x_biquad);
+	biquad_reset(&gyro_y_biquad);
+	biquad_reset(&gyro_z_biquad);
 	ahrs_update_all_parameters(&m_att, 1.0, 10.0, 0.0, 2.0);
 	m_settings.rot_roll = 0;
 	m_settings.rot_pitch = 0;

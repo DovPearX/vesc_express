@@ -94,6 +94,7 @@ set(COMPONENT_SRCS
 "drivers/imu/bmi160_wrapper.c"
 "drivers/imu/lsm6ds3.c"
 "drivers/imu/qmi8658.c"
+"drivers/imu/mpu9x50_wrapper.c"
 "drivers/imu/bmi160/bmi160.c"
 "drivers/imu/ahrs.c"
 

@@ -72,6 +72,7 @@ bool imu_i2c_tx_rx(uint8_t addr,
 void imu_reset_orientation(void);
 void imu_init_lsm6ds3(void);
 void imu_init_qmi8658(void);
+void imu_init_mpu9x50(void);
 void imu_stop(void);
 bool imu_startup_done(void);
 float imu_get_roll(void);

@@ -2584,6 +2584,7 @@ static void i2c_stop_driver(void) {
 	if (i2c_started) {
 		i2c_driver_delete(0);
 		i2c_started = false;
+		vTaskDelay(pdMS_TO_TICKS(10));
 	}
 }
 
@@ -5037,6 +5038,9 @@ static lbm_value ext_imu_start(lbm_value *args, lbm_uint argn) {
 
 	imu_stop();
 	i2c_stop_driver();
+	
+	i2c_driver_delete(0);
+	vTaskDelay(pdMS_TO_TICKS(20));
 
 	esp_err_t err = i2c_param_config(0, &conf);
 	if (err != ESP_OK) {
@@ -5112,6 +5116,89 @@ static lbm_value ext_imu_calibrate(lbm_value *args, lbm_uint argn) {
 	}
 
 	return res;
+}
+
+static lbm_value ext_imu_config(lbm_value *args, lbm_uint argn) {
+	if (!imu_config_load(&imu_cfg)) {
+		lbm_set_error_reason("Failed to load IMU config");
+		return ENC_SYM_EERROR;
+	}
+
+	if (argn == 0) {
+		commands_printf_lisp("IMU type=%d, mode=%d, filter=%d, rate=%d Hz, Mahony(Kp=%.3f,Ki=%.3f), Madgwick(beta=%.3f)",
+				imu_cfg.type, imu_cfg.mode, imu_cfg.filter, imu_cfg.sample_rate_hz,
+				imu_cfg.mahony_kp, imu_cfg.mahony_ki, imu_cfg.madgwick_beta);
+
+		lbm_value res = ENC_SYM_NIL;
+		res = lbm_cons(lbm_enc_float(imu_cfg.madgwick_beta), res);
+		res = lbm_cons(lbm_enc_float(imu_cfg.mahony_ki), res);
+		res = lbm_cons(lbm_enc_float(imu_cfg.mahony_kp), res);
+		res = lbm_cons(lbm_enc_i(imu_cfg.sample_rate_hz), res);
+		res = lbm_cons(lbm_enc_i(imu_cfg.filter), res);
+		res = lbm_cons(lbm_enc_i(imu_cfg.mode), res);
+		res = lbm_cons(lbm_enc_i(imu_cfg.type), res);
+		return res;
+	}
+
+	if (argn != 7) {
+		lbm_set_error_reason("Use: (imu-config) or (imu-config type mode filter sample_rate mahony_kp mahony_ki madgwick_beta)");
+		return ENC_SYM_TERROR;
+	}
+
+	for (lbm_uint i = 0; i < argn; i++) {
+		if (!lbm_is_number(args[i])) {
+			return ENC_SYM_TERROR;
+		}
+	}
+
+	int type = lbm_dec_as_i32(args[0]);
+	int mode = lbm_dec_as_i32(args[1]);
+	int filter = lbm_dec_as_i32(args[2]);
+	int sample_rate_hz = lbm_dec_as_i32(args[3]);
+	float mahony_kp = lbm_dec_as_float(args[4]);
+	float mahony_ki = lbm_dec_as_float(args[5]);
+	float madgwick_beta = lbm_dec_as_float(args[6]);
+
+	if (type < IMU_TYPE_OFF || type > IMU_TYPE_EXTERNAL_QMI8658) {
+		lbm_set_error_reason("Invalid IMU type");
+		return ENC_SYM_EERROR;
+	}
+
+	if (mode < AHRS_MODE_MADGWICK || mode > AHRS_MODE_MADGWICK_FUSION) {
+		lbm_set_error_reason("Mode must be 0 (Madgwick), 1 (Mahony), or 2 (Madgwick_Fusion)");
+		return ENC_SYM_EERROR;
+	}
+
+	if (filter < IMU_FILTER_LOW || filter > IMU_FILTER_HIGH) {
+		lbm_set_error_reason("Filter must be 0 (Low), 1 (Medium), or 2 (High)");
+		return ENC_SYM_EERROR;
+	}
+
+	if (sample_rate_hz < 4 || sample_rate_hz > 8000) {
+		lbm_set_error_reason("Sample rate must be between 4 and 8000 Hz");
+		return ENC_SYM_EERROR;
+	}
+
+	if (madgwick_beta < 0.0f || madgwick_beta > 1.0f) {
+		lbm_set_error_reason("Madgwick beta must be between 0.0 and 1.0");
+		return ENC_SYM_EERROR;
+	}
+
+	imu_cfg.type = type;
+	imu_cfg.mode = mode;
+	imu_cfg.filter = filter;
+	imu_cfg.sample_rate_hz = sample_rate_hz;
+	imu_cfg.mahony_kp = mahony_kp;
+	imu_cfg.mahony_ki = mahony_ki;
+	imu_cfg.madgwick_beta = madgwick_beta;
+
+	imu_config_save(&imu_cfg);
+
+	commands_printf_lisp("IMU config saved: type=%d mode=%d filter=%d rate=%d Kp=%.3f Ki=%.3f beta=%.3f",
+			imu_cfg.type, imu_cfg.mode, imu_cfg.filter, imu_cfg.sample_rate_hz,
+			imu_cfg.mahony_kp, imu_cfg.mahony_ki, imu_cfg.madgwick_beta);
+
+	return ENC_SYM_TRUE;
 }
 
 static lbm_value ext_get_imu_rpy(lbm_value *args, lbm_uint argn) {
@@ -6872,6 +6959,7 @@ void lispif_load_vesc_extensions(bool main_found) {
 		// IMU
 		lbm_add_extension("imu-start", ext_imu_start);
 		lbm_add_extension("imu-stop", ext_imu_stop);
+		lbm_add_extension("imu-config", ext_imu_config);
 		lbm_add_extension("imu-calibrate", ext_imu_calibrate);
 		lbm_add_extension("get-imu-rpy", ext_get_imu_rpy);
 		lbm_add_extension("get-imu-quat", ext_get_imu_quat);
