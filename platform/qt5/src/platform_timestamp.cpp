@@ -1,6 +1,5 @@
 /*
-    Copyright 2023, 2025 Joel Svensson        svenssonjoel@yahoo.se
-              2022       Benjamin Vedder      benjamin@vedder.se
+    Copyright 2026 Joel Svensson  svenssonjoel@yahoo.se
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,16 +15,24 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef LBM_DYN_LIB_H_
-#define LBM_DYN_LIB_H_
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include "platform_timestamp.h"
+#include <QThread>
+#include <QElapsedTimer>
+#include <QAtomicInteger>
 
-void lbm_dyn_lib_init(void);
-bool lbm_dyn_lib_find(const char *str, const char **code);
+static QAtomicInteger<quint32> timestamp_cache(0);
+static QElapsedTimer           elapsed_timer;
 
-#ifdef __cplusplus
+void lbm_timestamp_cacher(void *v) {
+  (void)v;
+  elapsed_timer.start();
+  while (true) {
+    quint32 us = static_cast<quint32>(elapsed_timer.nsecsElapsed() / 1000);
+    timestamp_cache.storeRelease(us);
+    QThread::usleep(100);
+  }
 }
-#endif
-#endif
+
+uint32_t lbm_timestamp(void) {
+  return static_cast<uint32_t>(timestamp_cache.loadAcquire());
+}

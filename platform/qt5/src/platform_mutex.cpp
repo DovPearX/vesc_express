@@ -1,6 +1,5 @@
 /*
-    Copyright 2023, 2025 Joel Svensson        svenssonjoel@yahoo.se
-              2022       Benjamin Vedder      benjamin@vedder.se
+    Copyright 2026 Joel Svensson  svenssonjoel@yahoo.se
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,16 +15,18 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef LBM_DYN_LIB_H_
-#define LBM_DYN_LIB_H_
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include "platform_mutex.h"
+#include <QMutex>
 
-void lbm_dyn_lib_init(void);
-bool lbm_dyn_lib_find(const char *str, const char **code);
-
-#ifdef __cplusplus
+bool lbm_mutex_init(lbm_mutex_t *m) {
+  m->handle = new QMutex();
+  return m->handle != nullptr;
 }
-#endif
-#endif
+
+void lbm_mutex_lock(lbm_mutex_t *m) {
+  static_cast<QMutex *>(m->handle)->lock();
+}
+
+void lbm_mutex_unlock(lbm_mutex_t *m) {
+  static_cast<QMutex *>(m->handle)->unlock();
+}
