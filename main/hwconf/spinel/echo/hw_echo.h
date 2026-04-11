@@ -2,7 +2,10 @@
 #define HWCONF_ECHO_H_
 
 #define HW_NAME                 "ECHO"
-#define HW_TARGET               "esp32s3_n16r8"
+#define HW_TARGET               "esp32s3"
+#define HW_HAS_PSRAM
+#define HW_FLASH_16MB
+#define HW_INTERNAL_FS
 
 #define OVR_CONF_PARSER_C		"echo_confparser.c"
 #define OVR_CONF_PARSER_H		"echo_confparser.h"
@@ -68,16 +71,6 @@ typedef struct {
 #define PIN_DOWN				5
 #define PIN_GND					15
 #define PIN_POWER				7
-
-// UART
-#define UART_NUM					0
-#define UART_BAUDRATE				115200
-#define UART_TX						6
-#define UART_RX						7
-
-#define HW_IMU_SDA 18
-#define HW_IMU_SCL 17
-#define HW_IMU_TYPE IMU_TYPE_EXTERNAL_MPU9X50
 
 // Functions
 void hw_init(void);

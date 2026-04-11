@@ -2,7 +2,10 @@
 #define HW_DEVKIT_S3_PSRAM_H_
 
 #define HW_NAME                 "Devkit S3 PSRAM"
-#define HW_TARGET               "esp32s3_n16r8"
+#define HW_TARGET               "esp32s3"
+#define HW_HAS_PSRAM
+#define HW_FLASH_16MB
+#define HW_INTERNAL_FS
 #define HW_UART_COMM
 
 #define HW_INIT_HOOK()          hw_init()

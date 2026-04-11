@@ -24,7 +24,6 @@
 
 #define HW_NAME						"rESCue S3"
 #define HW_TARGET                   "esp32s3"
-
 #define HW_INIT_HOOK()				hw_init()
 
 // CAN

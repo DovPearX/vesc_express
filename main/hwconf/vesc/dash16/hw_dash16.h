@@ -25,7 +25,6 @@
 
 #define HW_NAME						"Dash16"
 #define HW_TARGET					"esp32c3"
-
 #define HW_NO_UART
 
 #define HW_INIT_HOOK()				hw_init()

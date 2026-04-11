@@ -15,25 +15,22 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef HWCONF_RADS_H_
-#define HWCONF_RADS_H_
+#ifndef HWCONF_RABR_H_
+#define HWCONF_RABR_H_
 
-#define HW_NAME				"RADS"
-#define HW_TARGET           "esp32s3"
-//#define HW_HAS_PSRAM
-#define HW_FLASH_16MB
-#define HW_INTERNAL_FS
+#define HW_NAME				"RABR"
+#define HW_TARGET           "esp32c3"
 
-#define OVR_CONF_PARSER_C		"rads_confparser.c"
-#define OVR_CONF_PARSER_H		"rads_confparser.h"
-#define OVR_CONF_XML_C			"rads_confxml.c"
-#define OVR_CONF_XML_H			"rads_confxml.h"
-#define OVR_CONF_DEFAULT		"rads_conf_default.h"
-#define OVR_CONF_SERIALIZE		rads_confparser_serialize_main_config_t
-#define OVR_CONF_DESERIALIZE	rads_confparser_deserialize_main_config_t
-#define OVR_CONF_SET_DEFAULTS	rads_confparser_set_defaults_main_config_t
+#define OVR_CONF_PARSER_C		"rabr_confparser.c"
+#define OVR_CONF_PARSER_H		"rabr_confparser.h"
+#define OVR_CONF_XML_C			"rabr_confxml.c"
+#define OVR_CONF_XML_H			"rabr_confxml.h"
+#define OVR_CONF_DEFAULT		"rabr_conf_default.h"
+#define OVR_CONF_SERIALIZE		rabr_confparser_serialize_main_config_t
+#define OVR_CONF_DESERIALIZE	rabr_confparser_deserialize_main_config_t
+#define OVR_CONF_SET_DEFAULTS	rabr_confparser_set_defaults_main_config_t
 #define OVR_CONF_MAIN_CONFIG
-#define VAR_INIT_CODE				259763451
+#define VAR_INIT_CODE				259763435
 
 typedef struct {
 	int controller_id;
@@ -57,35 +54,19 @@ typedef struct {
 	uint32_t ble_chr_descr_capacity;
 } main_config_t;
 
-#define HW_DEFAULT_ID 20
+#define HW_DEFAULT_ID 10
 
 #define HW_INIT_HOOK() 			hw_init()
 
 // CAN
-#define CAN_TX_GPIO_NUM			6
-#define CAN_RX_GPIO_NUM			5
+#define CAN_TX_GPIO_NUM			0
+#define CAN_RX_GPIO_NUM			1
 
-// Display
-#define DISP_SD0			13
-#define DISP_CLK			10
-#define DISP_CS				12
-#define DISP_RESET			9
-#define DISP_DC				11
-
-// Touch CST816
-#define TOUCH_I2C_SDA		47
-#define TOUCH_I2C_SCL		48
-#define TOUCH_RST			17
-#define TOUCH_INT			21
-
-// QMI8658 IMU
-#define QMI_I2C_SDA			47
-#define QMI_I2C_SCL			48
-#define QMI_INT1		 	8
-#define QMI_INT2		 	7
-#define QMI_I2C_ADDR		0x6B
-
+// Other pins
+#define PIN_LED_SYSTEM 8
+#define PIN_LED_DATA 9
+#define PIN_HV_INPUT 7
 // Functions
 void hw_init(void);
 
-#endif /* HWCONF_RADS_H_ */
+#endif /* HWCONF_RABR_H_ */
