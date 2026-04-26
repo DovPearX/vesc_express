@@ -85,6 +85,7 @@ set(COMPONENT_SRCS
 "display/disp_sh8601.c"
 "display/disp_axs15231.c"
 "display/disp_gc9a01.c"
+"display/disp_jd9853.c"
 
 "drivers/bme280/bme280.c"
 "drivers/bme280/bme280_if.c"

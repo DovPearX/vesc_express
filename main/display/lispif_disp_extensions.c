@@ -38,6 +38,7 @@
 #include "display/disp_icna3306.h"
 #include "display/disp_axs15231.h"
 #include "display/disp_gc9a01.h"
+#include "display/disp_jd9853.h"
 
 #include <math.h>
 
@@ -425,6 +426,40 @@ static lbm_value ext_disp_load_gc9a01(lbm_value *args, lbm_uint argn) {
 	return ENC_SYM_TRUE;
 }
 
+static lbm_value ext_disp_load_jd9853(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(6);
+
+	int gpio_sd0 = lbm_dec_as_i32(args[0]);
+	int gpio_clk = lbm_dec_as_i32(args[1]);
+	int gpio_cs = lbm_dec_as_i32(args[2]);
+	int gpio_reset = lbm_dec_as_i32(args[3]);
+	int gpio_dc = lbm_dec_as_i32(args[4]);
+
+	if (!utils_gpio_is_valid(gpio_sd0) ||
+			!utils_gpio_is_valid(gpio_clk) ||
+			!utils_gpio_is_valid(gpio_cs) ||
+			(!utils_gpio_is_valid(gpio_reset) && gpio_reset >= 0) ||
+			!utils_gpio_is_valid(gpio_dc)) {
+		lbm_set_error_reason(msg_invalid_gpio);
+		return ENC_SYM_EERROR;
+	}
+
+	uint32_t spi_mhz = lbm_dec_as_u32(args[5]);
+	if (spi_mhz == 0 || spi_mhz > 40) {
+		lbm_set_error_reason(msg_invalid_clk_speed);
+		return ENC_SYM_EERROR;
+	}
+
+	disp_jd9853_init(gpio_sd0, gpio_clk, gpio_cs, gpio_reset, gpio_dc, spi_mhz);
+
+	lbm_display_extensions_set_callbacks(
+			disp_jd9853_render_image,
+			disp_jd9853_clear,
+			disp_jd9853_reset);
+
+	return ENC_SYM_TRUE;
+}
+
 void lispif_load_disp_extensions(void) {
 
 	lbm_display_extensions_init();
@@ -440,5 +475,6 @@ void lispif_load_disp_extensions(void) {
 	lbm_add_extension("disp-load-icna3306", ext_disp_load_icna3306);
 	lbm_add_extension("disp-load-axs15231", ext_disp_load_axs15231);
 	lbm_add_extension("disp-load-gc9a01", ext_disp_load_gc9a01);
+	lbm_add_extension("disp-load-jd9853", ext_disp_load_jd9853);
 }
 
