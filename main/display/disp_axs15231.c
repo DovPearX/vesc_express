@@ -40,7 +40,7 @@ static int m_display_height = DISPLAY_HEIGHT_PHYS;
 static int m_rotation = 0;
 
 #define CHUNK_LINES_LOW	20
-#define CHUNK_LINES_HIGH 80
+#define CHUNK_LINES_HIGH 40
 
 #define PIX_BUF_PIXELS	(DISPLAY_HEIGHT_PHYS * CHUNK_LINES_HIGH)
 #define PIX_BUF_BYTES	(PIX_BUF_PIXELS * 2)

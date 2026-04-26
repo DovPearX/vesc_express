@@ -4,7 +4,6 @@
 #define HW_NAME                     "Devkit C6"
 #define HW_TARGET                   "esp32c6"
 #define HW_UART_COMM
-#define HW_FLASH_8MB
 
 #define HW_INIT_HOOK()              hw_init()
 

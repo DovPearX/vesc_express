@@ -98,9 +98,9 @@ extern lbm_const_heap_t *lbm_const_heap_state;
 #define LBM_MEMORY_SIZE_KB(kb) LBM_MEMORY_SIZE_64BYTES_TIMES_X((kb * 16))
 #define LBM_BITMAP_SIZE_KB(kb) LBM_MEMORY_BITMAP_SIZE((kb * 16))
 
-#define LBM_PSRAM_HEAP_BYTES   (2048 * 1024)
-#define LBM_PSRAM_MEMORY_KB    2048
-#define LBM_PSRAM_BITMAP_KB    2048
+#define LBM_PSRAM_HEAP_BYTES   (4096 * 16)
+#define LBM_PSRAM_MEMORY_KB    512
+#define LBM_PSRAM_BITMAP_KB    512
 
 void lispif_init(void) {
 #ifndef CONFIG_SPIRAM

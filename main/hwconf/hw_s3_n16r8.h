@@ -1,11 +1,8 @@
-#ifndef HW_DEVKIT_S3_PSRAM_H_
-#define HW_DEVKIT_S3_PSRAM_H_
+#ifndef HW_S3_N16R8_H_
+#define HW_S3_N16R8_H_
 
-#define HW_NAME                 "Devkit S3 PSRAM"
+#define HW_NAME                 "S3 N16R8"
 #define HW_TARGET               "esp32s3"
-#define HW_HAS_PSRAM
-#define HW_FLASH_16MB
-#define HW_INTERNAL_FS
 #define HW_UART_COMM
 
 #define HW_INIT_HOOK()          hw_init()
@@ -23,4 +20,4 @@
 // Functions
 void hw_init(void);
 
-#endif /* HW_DEVKIT_S3_PSRAM_H_ */
+#endif /* HW_S3_N16R8_H_ */

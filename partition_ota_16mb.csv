@@ -4,6 +4,6 @@ otadata,data,ota,,0x2000
 phy_init,data,phy,,0x1000
 ota_0,app,ota_0,,4096k
 ota_1,app,ota_1,,4096k
-lisp,data,nvs,,1024k
-qml,data,nvs,,256k
-storage,data,spiffs,,6144k
+lisp,data,nvs,,512k
+qml,data,nvs,,128k
+storage,data,spiffs,,4096k

@@ -4,9 +4,11 @@
 ; SDA 3
 ; SCL 2
 
+(import "font_16_26.bin" 'font)
+
 (disp-load-gc9a01 3 2 5 6 4 40)
 (disp-reset)
-(ext-disp-orientation 0)
+(ext-disp-orientation 2)
 
 (def img (img-buffer 'indexed4 240 240))
 
@@ -56,7 +58,7 @@
 
 (loopwhile t {
         (var t-start (systime))
-        (img-text img 60 35 2 0 (str-from-n fps "FPS %.1f ") '(magnify 3))
+        (img-text img 60 35 2 0 font (str-from-n fps "FPS %.1f "))
         (img-circle img 120 120 120 3 '(thickness 2))
         (draw-edges)
         (rotate-cube 0.1 0.05)
