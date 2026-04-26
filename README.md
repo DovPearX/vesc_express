@@ -8,7 +8,19 @@ Instructions for how to set up the toolchain can be found here:
 [https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/get-started/linux-macos-setup.html](https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/get-started/linux-macos-setup.html)
 
 **Note**  
-ESP-IDF version 5.2 or later is required for building this project.
+
+## ESP-IDF Version Compatibility and Known Issues
+
+**Important notes:**
+
+- On ESP-IDF 5.2.2:
+	- ESP32-C6: WiFi does not work due to upstream bugs in this release.
+	- PSRAM: There are known issues with PSRAM support on all targets when building with 5.2.2.
+
+- For full PSRAM and WiFi support (including ESP32-C6), use ESP-IDF version **5.5.4**. On this version, PSRAM and all major features work correctly.
+	- However, 5.5.4 is **not officially supported**, so use it at your own risk.
+
+If you encounter issues with WiFi on C6 or PSRAM on any target, try upgrading to ESP-IDF 5.5.4.
 
 ### Get Release 5.2.2
 
@@ -31,9 +43,9 @@ idf.py set-target <target>
 
 where target is esp32c3, esp32c6 or esp32s3. You will need to run a fullclean or remove the build directory when changing targets.
 
-Each build target now uses its own base `sdkconfig.defaults.<target>` file plus optional overlays selected from HW flags such as `HW_FLASH_16MB`, `HW_FLASH_4MB`, `HW_HAS_PSRAM` and `HW_INTERNAL_FS`.
+Each normal build target uses its own shared 4 MB base file `sdkconfig.defaults.<target>`.
 
-For example, a board can keep `HW_TARGET` as `esp32s3` and enable `HW_FLASH_16MB`, `HW_HAS_PSRAM` and `HW_INTERNAL_FS` in the hardware header to pull in those overlays.
+Boards that need non-default flash or PSRAM settings should instead provide their own full `sdkconfig.defaults.<hw_file>` file next to the shared target configs in the repository root.
 
 Once the toolchain is set up in the current path, the project can be built with
 

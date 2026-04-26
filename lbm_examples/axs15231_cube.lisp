@@ -1,24 +1,25 @@
 (import "font_16_26.bin" 'font)
 
-(disp-load-sh8601 13 10 12 9 11 40)
+(gpio-configure 1 'pin-mode-out)
+(gpio-write 1 1)
+
+(disp-load-axs15231 21 48 40 39 47 45 -1 80)
 (disp-reset)
+(ext-disp-orientation 0)
 
-(ext-disp-orientation 1)
-
-(def img (img-buffer 'indexed4 320 170))
+(def img (img-buffer 'rgb565 320 480))
 
 (defun line (x0 y0 x1 y1)
-    (img-line img x0 y0 x1 y1 1 '(thickness 2))
+    (img-line img x0 y0 x1 y1 0xffffff '(thickness 2))
 )
 
-; Nodes and edges of a 3d cube
 (def nodes '((-1 -1 -1) (-1 -1 1) (-1 1 -1) (-1 1 1) (1 -1 -1) (1 -1 1) (1 1 -1) (1 1 1)))
 (def edges '((0  1) (1 3) (3 2) (2 0) (4 5) (5 7) (7 6) (6 4) (0 4) (1 5) (2 6) (3 7)))
 
 (defun draw-edges () {
-        (var scale 45.0)
-        (var ofs-x (/ 220 scale))
-        (var ofs-y (/ 85 scale))
+        (var scale 68.0)
+        (var ofs-x (/ 160 scale))
+        (var ofs-y (/ 240 scale))
 
         (loopforeach e edges {
                 (var na (ix nodes (ix e 0)))
@@ -54,11 +55,12 @@
 
 (loopwhile t {
         (var t-start (systime))
-        (img-text img 10 10 3 0 font (str-from-n fps "FPS %.1f "))
-        (img-rectangle img 0 0 319 169 2)
+        (img-text img 5 5 0xffffff 0x000000 font (str-from-n fps "FPS %.1f"))
+        (img-circle img 160 240 150 0xff0000 '(thickness 5))
+        (img-rectangle img 0 0 319 479 0x00ff00)
         (draw-edges)
         (rotate-cube 0.1 0.05)
-        (disp-render img 0 0 (list 0x000000 0xff0000 0x00ff00 0x0000ff))
-        (img-clear img)
+        (disp-render img 0 0)
+        (img-clear img 0)
         (def fps (/ 1 (secs-since t-start)))
 })

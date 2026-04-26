@@ -84,6 +84,7 @@ set(COMPONENT_SRCS
 "display/disp_icna3306.c"
 "display/disp_sh8601.c"
 "display/disp_axs15231.c"
+"display/disp_gc9a01.c"
 
 "drivers/bme280/bme280.c"
 "drivers/bme280/bme280_if.c"
@@ -117,9 +118,6 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "hwconf/vesc/wcore"
 "hwconf/rescue"
 "hwconf/avaspark"
-"hwconf/spinel/rads"
-"hwconf/spinel/echo"
-"hwconf/spinel/rabr"
 
 "lispBM"
 "lispBM/include"
