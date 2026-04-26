@@ -328,3 +328,28 @@ After loading this driver, these helper extensions are available:
 
 * `ext-disp-cmd` - send a raw display command with optional parameters.
 * `ext-disp-orientation` - set rotation (`0`, `1`, `2`, `3`).
+
+## gc9a01
+
+* Resolution: 240 * 240
+* Colors: 16Bit
+* Interface: SPI
+
+Compatible with all image formats supported by the graphics library.
+
+### disp-load-gc9a01
+
+```clj
+(disp-load-gc9a01 gpio-sd0 gpio-clk gpio-cs gpio-reset gpio-dc spi-mhz)
+```
+
+Loads the gc9a01 driver using `hwspi` over SPI.
+
+* `gpio-reset` can be set to `-1` if reset is not connected.
+* `spi-mhz` must be in range `1..40`.
+
+Example:
+
+```clj
+(disp-load-gc9a01 6 5 19 -1 7 40)
+```
