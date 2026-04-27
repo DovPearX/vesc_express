@@ -5529,6 +5529,72 @@ static lbm_value ext_pwm_set_duty(lbm_value *args, lbm_uint argn) {
 	return lbm_enc_float((float)duty_i / (float)pwm_max[chan]);
 }
 
+// (pwm-beep pin freq dur-s)
+static lbm_value ext_pwm_beep(lbm_value *args, lbm_uint argn) {
+	if (argn != 3) {
+		lbm_set_error_reason((char*)lbm_error_str_num_args);
+		return ENC_SYM_TERROR;
+	}
+
+	if (!lbm_is_number(args[0]) || !lbm_is_number(args[1]) || !lbm_is_number(args[2])) {
+		lbm_set_error_reason((char*)lbm_error_str_incorrect_arg);
+		return ENC_SYM_TERROR;
+	}
+
+	int pin = lbm_dec_as_i32(args[0]);
+	int freq = lbm_dec_as_i32(args[1]);
+	float dur_s = lbm_dec_as_float(args[2]);
+	int dur_ms = (int)(dur_s * 1000.0f);
+
+	if (!utils_gpio_is_valid(pin)) {
+		lbm_set_error_reason(string_pin_invalid);
+		return ENC_SYM_TERROR;
+	}
+
+	if (freq < 20 || freq > 20000) {
+		lbm_set_error_reason("freq must be 20-20000");
+		return ENC_SYM_TERROR;
+	}
+
+	if (dur_ms <= 0) {
+		lbm_set_error_reason("dur-s must be > 0");
+		return ENC_SYM_TERROR;
+	}
+
+	ledc_timer_config_t ledc_timer = {
+		.speed_mode      = LEDC_LOW_SPEED_MODE,
+		.timer_num       = LEDC_TIMER_0,
+		.duty_resolution = LEDC_TIMER_10_BIT,
+		.freq_hz         = (uint32_t)freq,
+		.clk_cfg         = LEDC_AUTO_CLK
+	};
+
+	if (ledc_timer_config(&ledc_timer) != ESP_OK) {
+		lbm_set_error_reason("Failed to setup beep timer");
+		return ENC_SYM_EERROR;
+	}
+
+	ledc_channel_config_t ledc_channel = {
+		.speed_mode     = LEDC_LOW_SPEED_MODE,
+		.channel        = LEDC_CHANNEL_0,
+		.timer_sel      = LEDC_TIMER_0,
+		.intr_type      = LEDC_INTR_DISABLE,
+		.gpio_num       = pin,
+		.duty           = 512,
+		.hpoint         = 0
+	};
+
+	if (ledc_channel_config(&ledc_channel) != ESP_OK) {
+		lbm_set_error_reason("Failed to setup beep channel");
+		return ENC_SYM_EERROR;
+	}
+
+	vTaskDelay(pdMS_TO_TICKS(dur_ms));
+	ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+
+	return ENC_SYM_NIL;
+}
+
 // Compression
 
 typedef struct {
@@ -6834,6 +6900,7 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_add_extension("pwm-start", ext_pwm_start);
 		lbm_add_extension("pwm-stop", ext_pwm_stop);
 		lbm_add_extension("pwm-set-duty", ext_pwm_set_duty);
+		lbm_add_extension("pwm-beep", ext_pwm_beep);
 
 		// Compression
 		lbm_add_extension("unzip", ext_unzip);
