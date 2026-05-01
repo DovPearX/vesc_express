@@ -9,6 +9,8 @@ extern volatile bool event_ble_rx_en;
 extern volatile bool event_wifi_disconnect_en;
 extern volatile bool event_cmds_data_tx_en;
 extern volatile bool event_touch_int_en;
+extern volatile bool event_can2_sid_en;
+extern volatile bool event_can2_eid_en;
 
 extern volatile bool event_bms_bal_ovr_en;
 extern volatile bool event_bms_chg_allow_en;
@@ -24,6 +26,8 @@ extern lbm_uint sym_event_ble_rx;
 extern lbm_uint sym_event_wifi_disconnect;
 extern lbm_uint sym_event_cmds_data_tx;
 extern lbm_uint sym_event_touch_int;
+extern lbm_uint sym_event_can2_sid;
+extern lbm_uint sym_event_can2_eid;
 
 extern lbm_uint sym_bms_chg_allow;
 extern lbm_uint sym_bms_bal_ovr;

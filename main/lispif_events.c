@@ -13,6 +13,8 @@ volatile bool event_ble_rx_en = false;
 volatile bool event_wifi_disconnect_en = false;
 volatile bool event_cmds_data_tx_en = false;
 volatile bool event_touch_int_en = false;
+volatile bool event_can2_sid_en = false;
+volatile bool event_can2_eid_en = false;
 
 volatile bool event_bms_bal_ovr_en = false;
 volatile bool event_bms_chg_allow_en = false;
@@ -28,6 +30,8 @@ lbm_uint sym_event_ble_rx = 0;
 lbm_uint sym_event_wifi_disconnect = 0;
 lbm_uint sym_event_cmds_data_tx = 0;
 lbm_uint sym_event_touch_int = 0;
+lbm_uint sym_event_can2_sid = 0;
+lbm_uint sym_event_can2_eid = 0;
 
 lbm_uint sym_bms_chg_allow = 0;
 lbm_uint sym_bms_bal_ovr = 0;
@@ -44,6 +48,8 @@ void lispif_events_load_symbols() {
 	lbm_add_symbol_const("event-wifi-disconnect", &sym_event_wifi_disconnect);
 	lbm_add_symbol_const("event-cmds-data-tx", &sym_event_cmds_data_tx);
 	lbm_add_symbol_const("event-touch-int", &sym_event_touch_int);
+	lbm_add_symbol_const("event-can2-sid", &sym_event_can2_sid);
+	lbm_add_symbol_const("event-can2-eid", &sym_event_can2_eid);
 
 	lbm_add_symbol_const("event-bms-chg-allow", &sym_bms_chg_allow);
 	lbm_add_symbol_const("event-bms-bal-ovr", &sym_bms_bal_ovr);
