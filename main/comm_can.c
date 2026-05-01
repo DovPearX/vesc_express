@@ -1445,3 +1445,305 @@ void comm_can_update_pid_pos_offset(int id, float angle_now, bool store) {
 
 	comm_can_transmit_eid(id | ((uint32_t)CAN_PACKET_UPDATE_PID_POS_OFFSET << 8), buffer, send_index);
 }
+
+#ifdef CONFIG_IDF_TARGET_ESP32C6
+
+static volatile bool can2_init_done      = false;
+static volatile bool can2_sem_init_done  = false;
+static volatile bool can2_stop_threads   = false;
+static volatile bool can2_stop_rx        = false;
+static volatile bool can2_rx_running     = false;
+static volatile bool can2_use_vesc_dec   = true;
+
+static SemaphoreHandle_t can2_proc_sem;
+static SemaphoreHandle_t can2_send_mutex;
+static twai_handle_t can2_handle = NULL;
+
+static twai_message_t can2_rx_buf[RXBUF_LEN];
+static volatile int can2_rx_write = 0;
+static volatile int can2_rx_read = 0;
+static volatile int can2_recovery_cnt = 0;
+
+static twai_timing_config_t can2_t_config = TWAI_TIMING_CONFIG_500KBITS();
+
+static twai_timing_config_t can2_timing_from_kbits(int kbits) {
+	switch (kbits) {
+	case 125:  { twai_timing_config_t t = TWAI_TIMING_CONFIG_125KBITS(); return t; }
+	case 250:  { twai_timing_config_t t = TWAI_TIMING_CONFIG_250KBITS(); return t; }
+	case 1000: { twai_timing_config_t t = TWAI_TIMING_CONFIG_1MBITS();   return t; }
+	case 10:   { twai_timing_config_t t = TWAI_TIMING_CONFIG_10KBITS();  return t; }
+	case 20:   { twai_timing_config_t t = TWAI_TIMING_CONFIG_20KBITS();  return t; }
+	case 50:   { twai_timing_config_t t = TWAI_TIMING_CONFIG_50KBITS();  return t; }
+	case 100:  { twai_timing_config_t t = TWAI_TIMING_CONFIG_100KBITS(); return t; }
+	default:   { twai_timing_config_t t = TWAI_TIMING_CONFIG_500KBITS(); return t; }
+	}
+}
+
+static void can2_rx_task(void *arg) {
+	twai_message_t msg;
+
+	while (!can2_stop_threads && !can2_stop_rx) {
+		esp_err_t res = twai_receive_v2(can2_handle, &msg, pdMS_TO_TICKS(2));
+
+		if (res == ESP_OK) {
+			can2_rx_buf[can2_rx_write] = msg;
+			can2_rx_write++;
+			if (can2_rx_write >= RXBUF_LEN) {
+				can2_rx_write = 0;
+			}
+			xSemaphoreGive(can2_proc_sem);
+		}
+
+		twai_status_info_t st;
+		twai_get_status_info_v2(can2_handle, &st);
+		if (st.state == TWAI_STATE_BUS_OFF || st.state == TWAI_STATE_RECOVERING) {
+			twai_initiate_recovery_v2(can2_handle);
+
+			int timeout = 1500;
+			while ((st.state == TWAI_STATE_BUS_OFF || st.state == TWAI_STATE_RECOVERING)
+				   && !can2_stop_threads && !can2_stop_rx && timeout > 0) {
+				vTaskDelay(1);
+				twai_get_status_info_v2(can2_handle, &st);
+				timeout--;
+			}
+			if (!can2_stop_threads && !can2_stop_rx) {
+				twai_start_v2(can2_handle);
+			}
+			can2_recovery_cnt++;
+		}
+	}
+
+	can2_rx_running = false;
+	vTaskDelete(NULL);
+}
+
+static void can2_process_task(void *arg) {
+	for (;;) {
+		xSemaphoreTake(can2_proc_sem, pdMS_TO_TICKS(10));
+
+		while (can2_rx_read != can2_rx_write) {
+			twai_message_t *m = &can2_rx_buf[can2_rx_read];
+			can2_rx_read++;
+			if (can2_rx_read >= RXBUF_LEN) {
+				can2_rx_read = 0;
+			}
+
+			lispif_process_can2(m->identifier, m->data, m->data_length_code, m->extd);
+
+			if (can2_use_vesc_dec) {
+				if (!bms_process_can_frame(m->identifier, m->data, m->data_length_code, m->extd)) {
+					if (m->extd) {
+						decode_msg(m->identifier, m->data, m->data_length_code, false);
+					}
+				}
+			}
+		}
+	}
+	vTaskDelete(NULL);
+}
+
+static void can2_start_rx_thd(void) {
+	if (can2_rx_running) return;
+	can2_stop_rx    = false;
+	can2_rx_running = true;
+	xTaskCreatePinnedToCore(can2_rx_task, "can2_rx", 1024, NULL, configMAX_PRIORITIES - 1, NULL, tskNO_AFFINITY);
+}
+
+static void can2_stop_rx_thd(void) {
+	can2_stop_rx = true;
+	while (can2_rx_running) {
+		vTaskDelay(1);
+	}
+}
+
+void comm_can2_start(int pin_tx, int pin_rx, int baud_kbits) {
+	if (can2_init_done) {
+		xSemaphoreTake(can2_send_mutex, portMAX_DELAY);
+		can2_init_done = false;
+		xSemaphoreGive(can2_send_mutex);
+
+		can2_stop_threads = true;
+		can2_stop_rx_thd();
+
+		twai_stop_v2(can2_handle);
+		twai_driver_uninstall_v2(can2_handle);
+		can2_handle       = NULL;
+		can2_stop_threads = false;
+	}
+
+	if (!can2_sem_init_done) {
+		can2_proc_sem      = xSemaphoreCreateBinary();
+		can2_send_mutex    = xSemaphoreCreateMutex();
+		xTaskCreatePinnedToCore(can2_process_task, "can2_proc", 2048, NULL, 8, NULL, tskNO_AFFINITY);
+		can2_sem_init_done = true;
+	}
+
+	can2_t_config = can2_timing_from_kbits(baud_kbits);
+
+	const twai_filter_config_t  f_cfg = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+	twai_general_config_t       g_cfg = TWAI_GENERAL_CONFIG_DEFAULT_V2(1, pin_tx, pin_rx, TWAI_MODE_NORMAL);
+	g_cfg.tx_queue_len = 20;
+	g_cfg.rx_queue_len = 20;
+
+	if (twai_driver_install_v2(&g_cfg, &can2_t_config, &f_cfg, &can2_handle) != ESP_OK) {
+		return;
+	}
+
+	if (twai_start_v2(can2_handle) != ESP_OK) {
+		twai_driver_uninstall_v2(can2_handle);
+		can2_handle = NULL;
+		return;
+	}
+
+	can2_stop_threads = false;
+	can2_init_done = true;
+	can2_start_rx_thd();
+}
+
+void comm_can2_stop(void) {
+	if (!can2_init_done) return;
+
+	xSemaphoreTake(can2_send_mutex, portMAX_DELAY);
+	can2_init_done = false;
+	xSemaphoreGive(can2_send_mutex);
+
+	can2_stop_threads = true;
+	can2_stop_rx_thd();
+
+	twai_stop_v2(can2_handle);
+	twai_driver_uninstall_v2(can2_handle);
+	can2_handle       = NULL;
+	can2_stop_threads = false;
+}
+
+void comm_can2_use_vesc_decoder(bool use) {
+	can2_use_vesc_dec = use;
+}
+
+bool comm_can2_is_running(void) {
+	return can2_init_done;
+}
+
+int comm_can2_get_rx_recovery_cnt(void) {
+	return can2_recovery_cnt;
+}
+
+void comm_can2_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
+	if (!can2_init_done) {
+		return;
+	}
+
+	if (len > 8) {
+		len = 8;
+	}
+
+	twai_message_t tx = {0};
+	tx.extd = 1;
+	tx.identifier = id;
+	tx.data_length_code = len;
+	memcpy(tx.data, data, len);
+
+	xSemaphoreTake(can2_send_mutex, portMAX_DELAY);
+
+	if (!can2_init_done) {
+		xSemaphoreGive(can2_send_mutex);
+		return;
+	}
+
+	twai_transmit_v2(can2_handle, &tx, pdMS_TO_TICKS(5));
+
+	xSemaphoreGive(can2_send_mutex);
+}
+
+void comm_can2_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len) {
+	if (!can2_init_done) {
+		return;
+	}
+
+	if (len > 8) {
+		len = 8;
+	}
+
+	twai_message_t tx = {0};
+	tx.extd = 0;
+	tx.identifier = id;
+	tx.data_length_code = len;
+	memcpy(tx.data, data, len);
+
+	xSemaphoreTake(can2_send_mutex, portMAX_DELAY);
+
+	if (!can2_init_done) {
+		xSemaphoreGive(can2_send_mutex);
+		return;
+	}
+
+	twai_transmit_v2(can2_handle, &tx, pdMS_TO_TICKS(5));
+
+	xSemaphoreGive(can2_send_mutex);
+}
+
+void comm_can2_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send_type) {
+	uint8_t buf[8];
+
+	if (len <= 6) {
+		uint32_t ind = 0;
+		buf[ind++] = backup.config.controller_id;
+		buf[ind++] = send_type;
+		memcpy(buf + ind, data, len);
+		ind += len;
+		comm_can2_transmit_eid(controller_id | ((uint32_t)CAN_PACKET_PROCESS_SHORT_BUFFER << 8), buf, ind);
+		return;
+	}
+
+	unsigned int end_a = 0;
+	for (unsigned int i = 0;i < len;i += 7) {
+		if (i > 255) {
+			break;
+		}
+
+		end_a = i + 7;
+
+		uint8_t send_len = 7;
+		buf[0] = i;
+
+		if ((i + 7) <= len) {
+			memcpy(buf + 1, data + i, send_len);
+		} else {
+			send_len = len - i;
+			memcpy(buf + 1, data + i, send_len);
+		}
+
+		comm_can2_transmit_eid(controller_id |
+				((uint32_t)CAN_PACKET_FILL_RX_BUFFER << 8), buf, send_len + 1);
+	}
+
+	for (unsigned int i = end_a;i < len;i += 6) {
+		uint8_t send_len = 6;
+		buf[0] = i >> 8;
+		buf[1] = i & 0xFF;
+
+		if ((i + 6) <= len) {
+			memcpy(buf + 2, data + i, send_len);
+		} else {
+			send_len = len - i;
+			memcpy(buf + 2, data + i, send_len);
+		}
+
+		comm_can2_transmit_eid(controller_id |
+				((uint32_t)CAN_PACKET_FILL_RX_BUFFER_LONG << 8), buf, send_len + 2);
+	}
+
+	uint32_t ind = 0;
+	buf[ind++] = backup.config.controller_id;
+	buf[ind++] = send_type;
+	buf[ind++] = len >> 8;
+	buf[ind++] = len & 0xFF;
+	unsigned short crc = crc16(data, len);
+	buf[ind++] = (uint8_t)(crc >> 8);
+	buf[ind++] = (uint8_t)(crc & 0xFF);
+
+	comm_can2_transmit_eid(controller_id |
+			((uint32_t)CAN_PACKET_PROCESS_RX_BUFFER << 8), buf, ind++);
+}
+
+#endif /* CONFIG_IDF_TARGET_ESP32C6 */
