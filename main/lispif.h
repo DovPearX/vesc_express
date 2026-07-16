@@ -50,6 +50,7 @@ void lispif_process_rmsg(int slot, unsigned char *data, unsigned int len);
 void lispif_add_ext_load_callback(void (*p_func)(bool));
 void lispif_add_dyn_load_callback(bool (*p_func)(const char*, const char**));
 bool lispif_is_eval_task(void);
+bool lispif_pause_eval(uint32_t min_free_cells, uint32_t timeout_ms);
 
 void lispif_load_vesc_extensions(bool main_found);
 char* lispif_print_prefix(void);

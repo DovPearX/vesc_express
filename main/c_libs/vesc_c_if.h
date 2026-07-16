@@ -91,6 +91,31 @@ typedef void* lib_thread;
 typedef void* lib_mutex;
 typedef void* lib_semaphore;
 
+// Result format for lbm_eval_expression. TEXT is NUL-terminated when the
+// capacity is non-zero. FLAT preserves lists, arrays and other LispBM values.
+typedef enum {
+	LBM_EVAL_RESULT_TEXT = 0,
+	LBM_EVAL_RESULT_FLAT = 1,
+} lbm_eval_result_format;
+
+// Return values from lbm_eval_expression and vesc_lbm_eval.
+typedef enum {
+	LBM_EVAL_OK                   = 0,
+	LBM_EVAL_ERROR                = -1,
+	LBM_EVAL_INVALID_ARGUMENT     = -2,
+	LBM_EVAL_NOT_SUPPORTED        = -3,
+	LBM_EVAL_WRONG_CONTEXT        = -4,
+	LBM_EVAL_BUSY                 = -5,
+	LBM_EVAL_NOT_RUNNING          = -6,
+	LBM_EVAL_PAUSE_TIMEOUT        = -7,
+	LBM_EVAL_START_FAILED         = -8,
+	LBM_EVAL_TIMEOUT              = -9,
+	LBM_EVAL_RESULT_TOO_SMALL     = -10,
+	LBM_EVAL_RESULT_UNFLATTENABLE = -11,
+	LBM_EVAL_OUT_OF_MEMORY        = -12,
+	LBM_EVAL_ABORTED              = -13,
+} vesc_lbm_eval_status;
+
 /*
  * Function pointer struct. Always add new function pointers to the end in
  * order to not break compatibility with old binaries. If a function is not
@@ -212,6 +237,16 @@ typedef struct {
 	void (*sem_signal)(lib_semaphore);
 	bool (*sem_wait_to)(lib_semaphore, systime_t); // Returns false on timeout
 	void (*sem_reset)(lib_semaphore);
+
+	// Evaluate one LispBM expression from a native worker thread and copy the
+	// result out of the LispBM heap. Do not call this from an evaluator extension.
+	// A timeout stops waiting but does not cancel the LispBM context. Use
+	// vesc_lbm_eval so prog_addr is supplied automatically.
+	int (*lbm_eval_expression)(
+		uint32_t prog_addr, const char *expression,
+		lbm_eval_result_format format, void *result, size_t result_capacity,
+		size_t *result_size, uint32_t timeout_ms
+	);
 } vesc_c_if;
 
 typedef struct {
@@ -273,5 +308,22 @@ typedef struct {
 #define ARG			(*VESC_IF->get_arg(PROG_ADDR))
 
 extern volatile int prog_ptr;
+
+#ifdef IS_VESC_LIB
+// Safe entry point for calling LispBM from a native-library worker thread.
+static inline int vesc_lbm_eval(
+	const char *expression, lbm_eval_result_format format, void *result,
+	size_t result_capacity, size_t *result_size, uint32_t timeout_ms
+) {
+	if (!VESC_IF->lbm_eval_expression) {
+		return LBM_EVAL_NOT_SUPPORTED;
+	}
+
+	return VESC_IF->lbm_eval_expression(
+		PROG_ADDR, expression, format, result, result_capacity, result_size,
+		timeout_ms
+	);
+}
+#endif
 
 #endif  // VESC_C_IF_H

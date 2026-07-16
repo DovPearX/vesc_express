@@ -34,10 +34,12 @@
 #include "extensions.h"
 #include "lbm_flat_value.h"
 #include "lispif.h"
+#include "lispif_c_lib.h"
 #include "lispbm.h"
 #include "utils.h"
 #include "c_libs/vesc_c_if.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 _Static_assert(sizeof(vesc_c_if) <= 2048, "cif pad too small");
 
@@ -62,6 +64,7 @@ static portMUX_TYPE lib_thr_mux = portMUX_INITIALIZER_UNLOCKED;
 #define LIB_NUM_MAX 10
 
 static lib_info loaded_libs[LIB_NUM_MAX] = {0};
+static bool lib_unloading[LIB_NUM_MAX]   = {0};
 
 // The flash (IROM) address of each loaded lib's container, i.e. the value
 // the lisp code passes to load-native-lib / unload-native-lib. For XIP libs
@@ -74,6 +77,32 @@ static void *lib_ram_alloc[LIB_NUM_MAX] = {0};
 // Second allocation backing a RAM-loaded lib's data region (S3), NULL
 // otherwise.
 static void *lib_ram_data[LIB_NUM_MAX] = {0};
+
+// Bridge requests own all memory used by the evaluator so callers can time out
+// without leaving LispBM with pointers to native-library memory.
+typedef struct {
+	lbm_cid cid;
+	uint32_t owner_base;
+	lbm_eval_result_format format;
+	char *expression;
+	uint8_t *result;
+	size_t result_capacity;
+	size_t result_size;
+	int status;
+	SemaphoreHandle_t done;
+	lbm_string_channel_state_t channel_state;
+	lbm_char_channel_t channel;
+	uint32_t references;
+	bool processing;
+	bool aborted;
+} lib_lbm_eval_request;
+
+#define LIB_LBM_EVAL_MAX_CALLS 4
+static lib_lbm_eval_request *lib_lbm_eval_calls[LIB_LBM_EVAL_MAX_CALLS] = {0};
+static bool lib_lbm_eval_accepting                                      = true;
+static portMUX_TYPE lib_lbm_eval_mux = portMUX_INITIALIZER_UNLOCKED;
+#define LIB_LBM_EVAL_LOCK()   portENTER_CRITICAL(&lib_lbm_eval_mux)
+#define LIB_LBM_EVAL_UNLOCK() portEXIT_CRITICAL(&lib_lbm_eval_mux)
 
 __attribute__((section(".libif"))) static volatile union {
 	vesc_c_if cif;
@@ -263,6 +292,370 @@ static void **lib_get_arg(uint32_t prog_addr) {
 	return NULL;
 }
 
+static int lib_find_slot_by_prog_addr(uint32_t prog_addr) {
+	uint32_t p = (uint32_t)utils_drom_to_irom((void *)prog_addr);
+
+	for (int i = 0; i < LIB_NUM_MAX; i++) {
+		if (loaded_libs[i].base_addr && p == loaded_libs[i].base_addr + 4u) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static bool lib_lbm_eval_owner_active(uint32_t owner_base) {
+	for (int i = 0; i < LIB_LBM_EVAL_MAX_CALLS; i++) {
+		if (lib_lbm_eval_calls[i]
+			&& lib_lbm_eval_calls[i]->owner_base == owner_base) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool lib_lbm_result_is_error(lbm_value value) {
+	return value == ENC_SYM_RERROR || value == ENC_SYM_TERROR
+		|| value == ENC_SYM_EERROR || value == ENC_SYM_MERROR
+		|| value == ENC_SYM_FATAL_ERROR || value == ENC_SYM_STACK_ERROR
+		|| value == ENC_SYM_ERROR_FLASH_HEAP_FULL
+		|| value == ENC_SYM_TOKENIZER_RERROR;
+}
+
+static void lib_lbm_eval_request_free(lib_lbm_eval_request *request) {
+	if (!request) {
+		return;
+	}
+
+	if (request->done) {
+		vSemaphoreDelete(request->done);
+	}
+	free(request->result);
+	free(request->expression);
+	free(request);
+}
+
+static void lib_lbm_eval_request_release(lib_lbm_eval_request *request) {
+	bool free_request = false;
+
+	LIB_LBM_EVAL_LOCK();
+	if (request->references > 0) {
+		request->references--;
+		free_request = request->references == 0;
+	}
+	LIB_LBM_EVAL_UNLOCK();
+
+	if (free_request) {
+		lib_lbm_eval_request_free(request);
+	}
+}
+
+static void lib_lbm_eval_remove(lib_lbm_eval_request *request) {
+	LIB_LBM_EVAL_LOCK();
+	for (int i = 0; i < LIB_LBM_EVAL_MAX_CALLS; i++) {
+		if (lib_lbm_eval_calls[i] == request) {
+			lib_lbm_eval_calls[i] = NULL;
+			break;
+		}
+	}
+	LIB_LBM_EVAL_UNLOCK();
+}
+
+// Called on the evaluator task before eval_cps releases the context.
+void lispif_c_lib_eval_context_done(eval_context_t *ctx) {
+	lib_lbm_eval_request *request;
+
+	LIB_LBM_EVAL_LOCK();
+	request = NULL;
+	for (int i = 0; i < LIB_LBM_EVAL_MAX_CALLS; i++) {
+		if (lib_lbm_eval_calls[i] && lib_lbm_eval_calls[i]->cid == ctx->id) {
+			request = lib_lbm_eval_calls[i];
+			if (!request->aborted) {
+				request->processing = true;
+			}
+			break;
+		}
+	}
+	LIB_LBM_EVAL_UNLOCK();
+
+	if (!request) {
+		return;
+	}
+	if (request->aborted) {
+		lib_lbm_eval_remove(request);
+		lib_lbm_eval_request_release(request);
+		return;
+	}
+
+	request->result_size = 0;
+	request->status      = lib_lbm_result_is_error(ctx->r) ? LBM_EVAL_ERROR
+														   : LBM_EVAL_OK;
+
+	if (request->format == LBM_EVAL_RESULT_TEXT) {
+		if (!request->result || request->result_capacity == 0) {
+			request->status = LBM_EVAL_RESULT_TOO_SMALL;
+		} else {
+			int print_ok = lbm_print_value(
+				(char *)request->result, request->result_capacity, ctx->r
+			);
+			request->result[request->result_capacity - 1] = '\0';
+			request->result_size =
+				strnlen((char *)request->result, request->result_capacity);
+			if (!print_ok) {
+				request->status = LBM_EVAL_RESULT_TOO_SMALL;
+			}
+		}
+	} else {
+		int required = flatten_value_size(ctx->r, false);
+		if (required < 0) {
+			request->status = LBM_EVAL_RESULT_UNFLATTENABLE;
+		} else {
+			request->result_size = (size_t)required;
+			if (!request->result
+				|| request->result_capacity < (size_t)required) {
+				request->status = LBM_EVAL_RESULT_TOO_SMALL;
+			} else {
+				lbm_flat_value_t flat = {
+					.buf      = request->result,
+					.buf_size = request->result_capacity,
+					.buf_pos  = 0,
+				};
+				if (flatten_value_c(&flat, ctx->r) != FLATTEN_VALUE_OK) {
+					request->status = LBM_EVAL_RESULT_UNFLATTENABLE;
+				} else {
+					request->result_size = flat.buf_pos;
+				}
+			}
+		}
+	}
+
+	lib_lbm_eval_remove(request);
+	xSemaphoreGive(request->done);
+	// Do not access request after dropping the evaluator reference.
+	lib_lbm_eval_request_release(request);
+}
+
+// Wake native workers before their libraries are stopped.
+void lispif_c_lib_eval_prepare_stop(void) {
+	lib_lbm_eval_request *wake[LIB_LBM_EVAL_MAX_CALLS] = {0};
+	int wake_count                                     = 0;
+
+	LIB_LBM_EVAL_LOCK();
+	lib_lbm_eval_accepting = false;
+	for (int i = 0; i < LIB_LBM_EVAL_MAX_CALLS; i++) {
+		lib_lbm_eval_request *request = lib_lbm_eval_calls[i];
+		if (request && !request->processing && !request->aborted) {
+			request->aborted     = true;
+			request->status      = LBM_EVAL_ABORTED;
+			request->result_size = 0;
+			request
+				->references++; // Keep it alive while signaling outside the lock
+			wake[wake_count++] = request;
+		}
+	}
+	LIB_LBM_EVAL_UNLOCK();
+
+	for (int i = 0; i < wake_count; i++) {
+		xSemaphoreGive(wake[i]->done);
+		lib_lbm_eval_request_release(wake[i]);
+	}
+}
+
+// Called after the evaluator task has stopped and cannot use channels.
+void lispif_c_lib_eval_reset(void) {
+	lib_lbm_eval_request *requests[LIB_LBM_EVAL_MAX_CALLS] = {0};
+
+	LIB_LBM_EVAL_LOCK();
+	for (int i = 0; i < LIB_LBM_EVAL_MAX_CALLS; i++) {
+		requests[i]           = lib_lbm_eval_calls[i];
+		lib_lbm_eval_calls[i] = NULL;
+	}
+	lib_lbm_eval_accepting = true;
+	LIB_LBM_EVAL_UNLOCK();
+
+	for (int i = 0; i < LIB_LBM_EVAL_MAX_CALLS; i++) {
+		if (requests[i]) {
+			lib_lbm_eval_request_release(requests[i]);
+		}
+	}
+}
+
+static int lib_lbm_eval_expression(
+	uint32_t prog_addr, const char *expression, lbm_eval_result_format format,
+	void *result, size_t result_capacity, size_t *result_size,
+	uint32_t timeout_ms
+) {
+	if (!expression || expression[0] == '\0' || timeout_ms == 0
+		|| (format != LBM_EVAL_RESULT_TEXT && format != LBM_EVAL_RESULT_FLAT)
+		|| (result_capacity > 0 && !result)) {
+		return LBM_EVAL_INVALID_ARGUMENT;
+	}
+
+	if (result_size) {
+		*result_size = 0;
+	}
+
+	if (lispif_is_eval_task()) {
+		return LBM_EVAL_WRONG_CONTEXT;
+	}
+
+	lib_lbm_eval_request *request = calloc(1, sizeof(*request));
+	if (!request) {
+		return LBM_EVAL_OUT_OF_MEMORY;
+	}
+
+	size_t expression_len = strlen(expression) + 1;
+	request->expression   = malloc(expression_len);
+	if (request->expression) {
+		memcpy(request->expression, expression, expression_len);
+	}
+	if (result_capacity > 0) {
+		request->result = malloc(result_capacity);
+	}
+	request->done            = xSemaphoreCreateBinary();
+	request->format          = format;
+	request->result_capacity = result_capacity;
+	request->status          = LBM_EVAL_START_FAILED;
+	request->references      = 1; // Calling native thread
+
+	if (!request->expression || (result_capacity > 0 && !request->result)
+		|| !request->done) {
+		lib_lbm_eval_request_free(request);
+		return LBM_EVAL_OUT_OF_MEMORY;
+	}
+
+	int request_slot = -1;
+	int owner_slot;
+	bool owner_valid = false;
+	bool accepting;
+	LIB_LBM_EVAL_LOCK();
+	accepting  = lib_lbm_eval_accepting;
+	owner_slot = lib_find_slot_by_prog_addr(prog_addr);
+	if (accepting && owner_slot >= 0 && !lib_unloading[owner_slot]) {
+		owner_valid         = true;
+		request->owner_base = loaded_libs[owner_slot].base_addr;
+		for (int i = 0; i < LIB_LBM_EVAL_MAX_CALLS; i++) {
+			if (!lib_lbm_eval_calls[i]) {
+				request_slot          = i;
+				lib_lbm_eval_calls[i] = request;
+				break;
+			}
+		}
+	}
+	LIB_LBM_EVAL_UNLOCK();
+	if (!accepting) {
+		lib_lbm_eval_request_free(request);
+		return LBM_EVAL_ABORTED;
+	}
+	if (!owner_valid) {
+		lib_lbm_eval_request_free(request);
+		return LBM_EVAL_INVALID_ARGUMENT;
+	}
+	if (request_slot < 0) {
+		lib_lbm_eval_request_free(request);
+		return LBM_EVAL_BUSY;
+	}
+
+	TickType_t started = xTaskGetTickCount();
+	lispif_lock_lbm();
+	LIB_LBM_EVAL_LOCK();
+	bool aborted = request->aborted;
+	LIB_LBM_EVAL_UNLOCK();
+	if (aborted) {
+		lispif_unlock_lbm();
+		lib_lbm_eval_remove(request);
+		lib_lbm_eval_request_release(request);
+		return LBM_EVAL_ABORTED;
+	}
+
+	if (lbm_get_eval_state() != EVAL_CPS_STATE_RUNNING) {
+		lispif_unlock_lbm();
+		lib_lbm_eval_remove(request);
+		lib_lbm_eval_request_release(request);
+		return LBM_EVAL_NOT_RUNNING;
+	}
+
+	if (!lispif_pause_eval(30, timeout_ms)) {
+		// Cancel a pause request that may finish just after the timeout.
+		lbm_continue_eval();
+		lispif_unlock_lbm();
+		lib_lbm_eval_remove(request);
+		lib_lbm_eval_request_release(request);
+		return LBM_EVAL_PAUSE_TIMEOUT;
+	}
+
+	lbm_create_string_char_channel(
+		&request->channel_state, &request->channel, request->expression
+	);
+	request->cid = lbm_load_and_eval_expression(&request->channel);
+	if (request->cid <= 0) {
+		lbm_continue_eval();
+		lispif_unlock_lbm();
+		lib_lbm_eval_remove(request);
+		lib_lbm_eval_request_release(request);
+		return LBM_EVAL_START_FAILED;
+	}
+	LIB_LBM_EVAL_LOCK();
+	request->references++; // Evaluator completion callback
+	aborted = request->aborted;
+	LIB_LBM_EVAL_UNLOCK();
+
+	lbm_continue_eval();
+	// Wait for the evaluator to acknowledge continue before another worker
+	// pauses it. Otherwise it can mistake the previous PAUSED state for its own.
+	while (lbm_get_eval_state() == EVAL_CPS_STATE_PAUSED) {
+		TickType_t resume_elapsed = xTaskGetTickCount() - started;
+		if (resume_elapsed * portTICK_PERIOD_MS >= timeout_ms) {
+			break;
+		}
+		vTaskDelay(1);
+	}
+	lispif_unlock_lbm();
+	if (aborted) {
+		// The evaluator owns the request until its context is discarded.
+		lib_lbm_eval_request_release(request);
+		return LBM_EVAL_ABORTED;
+	}
+
+	TickType_t elapsed_ticks = xTaskGetTickCount() - started;
+	uint32_t elapsed_ms      = elapsed_ticks * portTICK_PERIOD_MS;
+	uint32_t remaining_ms    = elapsed_ms < timeout_ms ? timeout_ms - elapsed_ms
+													   : 0;
+	TickType_t wait_ticks    = pdMS_TO_TICKS(remaining_ms);
+	if (remaining_ms > 0 && wait_ticks == 0) {
+		wait_ticks = 1;
+	}
+
+	bool signaled = remaining_ms > 0
+		&& xSemaphoreTake(request->done, wait_ticks) == pdTRUE;
+
+	if (!signaled) {
+		// The evaluator retains the request until the context finishes.
+		lib_lbm_eval_request_release(request);
+		return LBM_EVAL_TIMEOUT;
+	}
+
+	int status = request->status;
+	if (result_size) {
+		*result_size = request->result_size;
+	}
+	if (result && request->result && result_capacity > 0) {
+		size_t copy_len = request->result_size;
+		if (format == LBM_EVAL_RESULT_TEXT) {
+			copy_len++;
+		}
+		if (copy_len > result_capacity) {
+			copy_len = result_capacity;
+		}
+		memcpy(result, request->result, copy_len);
+		if (format == LBM_EVAL_RESULT_TEXT) {
+			((char *)result)[result_capacity - 1] = '\0';
+		}
+	}
+
+	lib_lbm_eval_request_release(request);
+	return status;
+}
+
 static bool lib_create_byte_array(lbm_value *value, lbm_uint num_elt) {
 	return lbm_heap_allocate_array(value, num_elt);
 }
@@ -423,12 +816,10 @@ lbm_value ext_load_native_lib(lbm_value *args, lbm_uint argn) {
 	bool is_reloc = false;
 
 	lbm_array_header_t *array = (lbm_array_header_t *)lbm_car(args[0]);
+	const uint8_t *container_drom = (const uint8_t *)array->data;
 	if (array->size > 12) {
 		uint32_t magic_be = 0;
-		memcpy(
-			&magic_be, (const uint8_t *)array->data,
-			sizeof(magic_be)
-		);
+		memcpy(&magic_be, container_drom, sizeof(magic_be));
 
 		if (magic_be == __builtin_bswap32(NATIVE_LIB_MAGIC) ||
 			magic_be == __builtin_bswap32(NATIVE_LIB_RELOC_MAGIC)) {
@@ -562,6 +953,9 @@ lbm_value ext_load_native_lib(lbm_value *args, lbm_uint argn) {
 
 		cif.cif.thread_set_priority = lib_thread_set_priority;
 
+		// Convenient, GC-safe C -> LispBM calls from native worker threads
+		cif.cif.lbm_eval_expression = lib_lbm_eval_expression;
+
 		lib_init_done = true;
 	}
 
@@ -613,6 +1007,11 @@ lbm_value ext_load_native_lib(lbm_value *args, lbm_uint argn) {
 		// D/IRAM that LispBM needs. Container layout after the magic:
 		// version, code_size, data_size, entry_offset, reloc_count (all
 		// LE u32), relocs[], code[], data[].
+		if (array->size < 24) {
+			lbm_set_error_reason("Native lib container header is truncated");
+			return res;
+		}
+
 		uint32_t version, code_size, data_size, entry_offset, reloc_count;
 		memcpy(&version, container_drom + 4, 4);
 		memcpy(&code_size, container_drom + 8, 4);
@@ -631,6 +1030,13 @@ lbm_value ext_load_native_lib(lbm_value *args, lbm_uint argn) {
 			|| entry_offset >= code_size || (entry_offset & 3)
 			|| reloc_count > (code_size + data_size) / 4) {
 			lbm_set_error_reason("Invalid native lib container");
+			return res;
+		}
+
+		uint64_t container_size = 24ull + (uint64_t)reloc_count * 4ull
+			+ (uint64_t)code_size + (uint64_t)data_size;
+		if (container_size > array->size) {
+			lbm_set_error_reason("Native lib container payload is truncated");
 			return res;
 		}
 
@@ -773,6 +1179,17 @@ lbm_value ext_unload_native_lib(lbm_value *args, lbm_uint argn) {
 	for (int i = 0; i < LIB_NUM_MAX; i++) {
 		if (loaded_libs[i].stop_fun != NULL
 			&& lib_flash_addr[i] == irom_base) {
+			// Reject unload while an evaluator context can still use the library.
+			// The shared lock closes the check/start race.
+			LIB_LBM_EVAL_LOCK();
+			if (lib_lbm_eval_owner_active(loaded_libs[i].base_addr)) {
+				LIB_LBM_EVAL_UNLOCK();
+				lbm_set_error_reason("Native library has active LispBM calls");
+				return res;
+			}
+			lib_unloading[i] = true;
+			LIB_LBM_EVAL_UNLOCK();
+
 			// The stop function must stop everything the lib started,
 			// including its threads, before returning.
 			if (lib_is_func_valid(loaded_libs[i].stop_fun)) {
@@ -790,6 +1207,9 @@ lbm_value ext_unload_native_lib(lbm_value *args, lbm_uint argn) {
 				heap_caps_free(lib_ram_data[i]);
 				lib_ram_data[i] = NULL;
 			}
+			LIB_LBM_EVAL_LOCK();
+			lib_unloading[i] = false;
+			LIB_LBM_EVAL_UNLOCK();
 
 			return lbm_enc_sym(SYM_TRUE);
 		}

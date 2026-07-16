@@ -23,6 +23,7 @@
 #include "eval_cps.h"
 #include "main.h"
 #include "lispif.h"
+#include "lispif_c_lib.h"
 #include "commands.h"
 #include "buffer.h"
 #include "lispbm.h"
@@ -214,15 +215,15 @@ static void prof_timer_callback(void* arg) {
 	lbm_prof_sample();
 }
 
-static bool pause_eval(uint32_t num_free, uint32_t timeout_ms) {
+bool lispif_pause_eval(uint32_t min_free_cells, uint32_t timeout_ms) {
 	if (!lisp_thd_running) {
 		return false;
 	}
 	
 	int timeout_cnt = timeout_ms;
 
-	if (num_free > 0) {
-		lbm_pause_eval_with_gc(num_free);
+	if (min_free_cells > 0) {
+		lbm_pause_eval_with_gc(min_free_cells);
 	} else {
 		lbm_pause_eval();
 	}
@@ -249,7 +250,7 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 		bool running = data[0];
 
 		if (!running) {
-			ok = pause_eval(0, 2000);
+			ok = lispif_pause_eval(0, 2000);
 		} else {
 			ok = lispif_restart(true, true, true);
 		}
@@ -314,7 +315,7 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 		// Result. Currently unused.
 		send_buffer_global[ind++] = '\0';
 
-		if (pause_eval(0, 2000)) {
+		if (lispif_pause_eval(0, 2000)) {
 			lbm_value *glob_env = lbm_get_global_env();
 			for (int i = 0; i < GLOBAL_ENV_ROOTS; i ++) {
 				if (ind > 300) {
@@ -486,7 +487,7 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 				commands_printf_lisp("Sleep:\t%u\t%f%%\n", num_sleep, (double)(100.0 * ((float)num_sleep / (float)tot_samples)));
 				commands_printf_lisp("Total:\t%u samples\n", tot_samples);
 			} else if (strncmp(str, ":env", 4) == 0) {
-				if (pause_eval(0, 1000)) {
+				if (lispif_pause_eval(0, 1000)) {
 					lbm_value *glob_env = lbm_get_global_env();
 					char output[128];
 					for (int i = 0; i < GLOBAL_ENV_ROOTS; i ++) {
@@ -505,7 +506,7 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 				commands_printf_lisp("****** Blocked contexts ******");
 				lbm_blocked_iterator(print_ctx_info, NULL, NULL);
 			} else if (strncmp(str, ":symbols", 8) == 0) {
-				if (pause_eval(0, 1000)) {
+				if (lispif_pause_eval(0, 1000)) {
 					lbm_symrepr_name_iterator(sym_it);
 					commands_printf_lisp(" ");
 				}
@@ -515,13 +516,13 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 						"Reset OK\n\n" : "Reset Failed\n\n");
 				lispif_lock_lbm();
 			} else if (strncmp(str, ":pause", 6) == 0) {
-				if (pause_eval(30, 1000)) {
+				if (lispif_pause_eval(30, 1000)) {
 					commands_printf_lisp("Evaluator paused\n");
 				}
 			} else if (strncmp(str, ":continue", 9) == 0) {
 				lbm_continue_eval();
 			} else if (strncmp(str, ":undef", 6) == 0) {
-				if (pause_eval(30, 1000)) {
+				if (lispif_pause_eval(30, 1000)) {
 					char *sym = str + 7;
 					commands_printf_lisp("undefining: %s", sym);
 					commands_printf_lisp("%s", lbm_undefine(sym) ? "Cleared bindings" : "No definition found");
@@ -557,7 +558,7 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 					break;
 				}
 
-				if (pause_eval(30, 1000)) {
+				if (lispif_pause_eval(30, 1000)) {
 					repl_buffer = lbm_malloc_reserve(len);
 					if (repl_buffer) {
 						static lbm_string_channel_state_t string_tok_state;
@@ -655,7 +656,7 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 
 			lispif_lock_lbm();
 
-			if (!pause_eval(30, 1000)) {
+			if (!lispif_pause_eval(30, 1000)) {
 				lispif_unlock_lbm();
 				result_last = -3;
 				offset_last = -1;
@@ -748,6 +749,8 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 }
 
 static void done_callback(eval_context_t *ctx) {
+	lispif_c_lib_eval_context_done(ctx);
+
 	lbm_cid cid = ctx->id;
 	lbm_value t = ctx->r;
 
@@ -777,6 +780,8 @@ void lispif_stop(void) {
 		return;
 	}
 
+	// Wake native workers before their stop functions try to join them.
+	lispif_c_lib_eval_prepare_stop();
 	lispif_stop_lib();
 
 	lispif_lock_lbm();
@@ -797,6 +802,9 @@ void lispif_stop(void) {
 		lisp_thd_running = false;
 		commands_printf_lisp("Killed eval task as it didn't stop when asked to");
 	}
+
+	// Queued contexts can no longer call the done callback.
+	lispif_c_lib_eval_reset();
 
 	lispif_unlock_lbm();
 }
