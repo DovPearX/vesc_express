@@ -70,7 +70,6 @@
 #include "esp_sleep.h"
 #include "soc/rtc.h"
 #if !CONFIG_IDF_TARGET_ESP32P4
-#include "esp_bt.h"
 #include "esp_bt_main.h"
 #include "esp_wifi.h"
 #endif

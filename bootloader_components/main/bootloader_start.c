@@ -41,6 +41,10 @@ static int select_partition_number(bootloader_state_t *bs) {
 	return bootloader_utility_get_selected_boot_partition(bs);
 }
 
+#if CONFIG_LIBC_NEWLIB
+// Picolibc does not expose Newlib's global reentrancy structure. Keep this
+// shim only for bootloaders that are explicitly built with Newlib.
 struct _reent *__getreent(void) {
 	return _GLOBAL_REENT;
 }
+#endif

@@ -25,7 +25,6 @@
 
 #include "driver/rmt_encoder.h"
 #include "driver/rmt_tx.h"
-#include "soc/rmt_periph.h"
 #include "soc/io_mux_reg.h"
 #include "soc/gpio_periph.h"
 #include "hal/gpio_hal.h"

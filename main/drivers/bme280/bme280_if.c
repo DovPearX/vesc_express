@@ -21,7 +21,7 @@
 #include "bme280_if.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include <string.h>
 
 // Private variables
@@ -33,6 +33,8 @@ static volatile bool mutex_init = false;
 static volatile bool init_done = false;
 static volatile bool stop_now = false;
 static SemaphoreHandle_t i2c_mutex;
+static i2c_master_bus_handle_t i2c_bus;
+static i2c_master_dev_handle_t i2c_device;
 
 // Private functions
 static void bme_task(void *arg);
@@ -42,17 +44,26 @@ void bme280_if_init(int pin_sda, int pin_scl) {
 		return;
 	}
 
-	i2c_config_t conf = {
-			.mode = I2C_MODE_MASTER,
-			.sda_io_num = pin_sda,
-			.scl_io_num = pin_scl,
-			.sda_pullup_en = GPIO_PULLUP_ENABLE,
-			.scl_pullup_en = GPIO_PULLUP_ENABLE,
-			.master.clk_speed = 100000,
+	i2c_master_bus_config_t bus_config = {
+		.i2c_port = I2C_NUM_0,
+		.sda_io_num = pin_sda,
+		.scl_io_num = pin_scl,
+		.glitch_ignore_cnt = 7,
+		.flags.enable_internal_pullup = true,
 	};
-
-	i2c_param_config(0, &conf);
-	i2c_driver_install(0, conf.mode, 0, 0, 0);
+	if (i2c_new_master_bus(&bus_config, &i2c_bus) != ESP_OK) {
+		return;
+	}
+	i2c_device_config_t device_config = {
+		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+		.device_address = BME280_I2C_ADDR_PRIM,
+		.scl_speed_hz = 100000,
+	};
+	if (i2c_master_bus_add_device(i2c_bus, &device_config, &i2c_device) != ESP_OK) {
+		i2c_del_master_bus(i2c_bus);
+		i2c_bus = NULL;
+		return;
+	}
 
 	init_done = true;
 	xTaskCreatePinnedToCore(bme_task, "BME280", 1536, NULL, 6, NULL, tskNO_AFFINITY);
@@ -107,7 +118,7 @@ static int8_t user_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, v
 		xSemaphoreTake(i2c_mutex, portMAX_DELAY);
 	}
 
-	esp_err_t res = i2c_master_write_read_device(0, BME280_I2C_ADDR_PRIM, txbuf, 1, reg_data, len, 1000 / portTICK_PERIOD_MS);
+	esp_err_t res = i2c_master_transmit_receive(i2c_device, txbuf, 1, reg_data, len, 1000 / portTICK_PERIOD_MS);
 
 	if (mutex_init) {
 		xSemaphoreGive(i2c_mutex);
@@ -127,7 +138,7 @@ static int8_t user_i2c_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t
 		xSemaphoreTake(i2c_mutex, portMAX_DELAY);
 	}
 
-	esp_err_t res = i2c_master_write_to_device(0, BME280_I2C_ADDR_PRIM, txbuf, len + 1, 1000 / portTICK_PERIOD_MS);
+	esp_err_t res = i2c_master_transmit(i2c_device, txbuf, len + 1, 1000 / portTICK_PERIOD_MS);
 
 	if (mutex_init) {
 		xSemaphoreGive(i2c_mutex);

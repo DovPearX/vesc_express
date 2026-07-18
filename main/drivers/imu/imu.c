@@ -23,6 +23,7 @@
 #include "lsm6ds3.h"
 #include "utils.h"
 #include "digital_filter.h"
+#include "driver/i2c_master.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -38,6 +39,8 @@ static bool imu_ready;
 static TickType_t init_time;
 static Biquad acc_x_biquad, acc_y_biquad, acc_z_biquad, gyro_x_biquad, gyro_y_biquad, gyro_z_biquad;
 static SemaphoreHandle_t m_i2c_mutex = 0;
+static i2c_master_bus_handle_t m_i2c_bus;
+static uint32_t m_i2c_speed = 400000;
 
 // Private functions
 static void imu_read_callback(float *accel, float *gyro, float *mag);
@@ -45,8 +48,9 @@ static void imu_read_callback(float *accel, float *gyro, float *mag);
 // Function pointers
 static void (*m_read_callback)(float *acc, float *gyro, float *mag, float dt) = NULL;
 
-void imu_init(imu_config *set, SemaphoreHandle_t i2c_mutex) {
+void imu_init(imu_config *set, SemaphoreHandle_t i2c_mutex, i2c_master_bus_handle_t i2c_bus) {
 	m_i2c_mutex = i2c_mutex;
+	m_i2c_bus = i2c_bus;
 	m_settings = *set;
 
 	// Biquad filters
@@ -106,12 +110,21 @@ bool imu_i2c_tx_rx(uint8_t addr,
 	esp_err_t res;
 	if (read_size > 0 && read_buffer != NULL) {
 		if (write_size > 0 && write_buffer != NULL) {
-			res = i2c_master_write_read_device(0, addr, write_buffer, write_size, read_buffer, read_size, 2000);
+			i2c_device_config_t config = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = addr, .scl_speed_hz = m_i2c_speed};
+			i2c_master_dev_handle_t device = NULL;
+			res = i2c_master_bus_add_device(m_i2c_bus, &config, &device);
+			if (res == ESP_OK) { res = i2c_master_transmit_receive(device, write_buffer, write_size, read_buffer, read_size, 2000); i2c_master_bus_rm_device(device); }
 		} else {
-			res = i2c_master_read_from_device(0, addr, read_buffer, read_size, 2000);
+			i2c_device_config_t config = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = addr, .scl_speed_hz = m_i2c_speed};
+			i2c_master_dev_handle_t device = NULL;
+			res = i2c_master_bus_add_device(m_i2c_bus, &config, &device);
+			if (res == ESP_OK) { res = i2c_master_receive(device, read_buffer, read_size, 2000); i2c_master_bus_rm_device(device); }
 		}
 	} else {
-		res = i2c_master_write_to_device(0, addr, write_buffer, write_size, 2000);
+		i2c_device_config_t config = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = addr, .scl_speed_hz = m_i2c_speed};
+		i2c_master_dev_handle_t device = NULL;
+		res = i2c_master_bus_add_device(m_i2c_bus, &config, &device);
+		if (res == ESP_OK) { res = i2c_master_transmit(device, write_buffer, write_size, 2000); i2c_master_bus_rm_device(device); }
 	}
 
 	if (m_i2c_mutex != 0) {

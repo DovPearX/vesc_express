@@ -3,6 +3,12 @@ cmake_minimum_required(VERSION 3.5)
 # You can set a HW here when e.g. building with the eclipse plugin
 # set(HW_NAME "Wcore")
 
+# Allow CI and command-line builds to select a hardware profile without
+# needing to escape spaces in a CMake -D argument.
+if(NOT DEFINED HW_NAME AND DEFINED ENV{HW_NAME})
+    set(HW_NAME "$ENV{HW_NAME}")
+endif()
+
 # Default build target Logic
 if(NOT DEFINED HW_NAME OR "${HW_NAME}" STREQUAL "")
     if(DEFINED IDF_TARGET)

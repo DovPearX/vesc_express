@@ -32,6 +32,9 @@
 
 #if !CONFIG_IDF_TARGET_ESP32P4
 #include "esp_bt.h"
+#endif
+
+#if !CONFIG_IDF_TARGET_ESP32P4
 #include "esp_bt_defs.h"
 #include "esp_bt_device.h"
 #include "esp_bt_main.h"
@@ -602,7 +605,7 @@ custom_ble_result_t custom_ble_start() {
 	esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL);
 	esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL);
 
-	esp_bt_dev_set_device_name(device_name);
+	esp_ble_gap_set_device_name(device_name);
 
 	esp_ble_gatts_register_callback(gatts_event_handler);
 	esp_ble_gap_register_callback(gap_event_handler);

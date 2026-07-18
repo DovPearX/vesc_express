@@ -27,9 +27,11 @@
 #endif
 #include "sdmmc_cmd.h"
 #include "esp_vfs.h"
+#include "diskio_impl.h"
+#include "ff.h"
 #include "buffer.h"
 #include "utils.h"
-#include "esp_vfs_fat_nand.h"
+#include "spi_nand_flash.h"
 
 #include <string.h>
 #include <stdarg.h>
@@ -57,6 +59,11 @@ char *file_basepath = "/sdcard/";
 static sdmmc_host_t m_host = SDSPI_HOST_DEFAULT();
 static sdmmc_card_t *m_card = 0;
 static spi_nand_flash_device_t *nand_flash_device_handle = 0;
+static spi_device_handle_t nand_spi_device = NULL;
+static BYTE nand_pdrv = FF_DRV_NOT_USED;
+static FATFS *nand_fs = NULL;
+static char nand_fat_drive[3] = "0:";
+static uint32_t nand_sector_size = 0;
 #ifdef HW_INTERNAL_FS
 static bool m_storage_mounted = false;
 #endif
@@ -76,6 +83,86 @@ static volatile float m_rate_hz = 10.0;
 static volatile bool m_append_time = false;
 static volatile bool m_append_gnss = false;
 static volatile bool m_append_gnss_time = false;
+
+static DSTATUS nand_disk_status(BYTE pdrv) {
+	return pdrv == nand_pdrv && nand_flash_device_handle ? 0 : STA_NOINIT;
+}
+
+static DSTATUS nand_disk_initialize(BYTE pdrv) {
+	return nand_disk_status(pdrv);
+}
+
+static DRESULT nand_disk_read(BYTE pdrv, BYTE *buffer, DWORD sector, UINT count) {
+	if (nand_disk_status(pdrv)) return RES_NOTRDY;
+	for (UINT i = 0; i < count; i++) {
+		if (spi_nand_flash_read_page(nand_flash_device_handle, buffer + (i * nand_sector_size), sector + i) != ESP_OK) {
+			return RES_ERROR;
+		}
+	}
+	return RES_OK;
+}
+
+static DRESULT nand_disk_write(BYTE pdrv, const BYTE *buffer, DWORD sector, UINT count) {
+	if (nand_disk_status(pdrv)) return RES_NOTRDY;
+	for (UINT i = 0; i < count; i++) {
+		if (spi_nand_flash_write_page(nand_flash_device_handle, buffer + (i * nand_sector_size), sector + i) != ESP_OK) {
+			return RES_ERROR;
+		}
+	}
+	return RES_OK;
+}
+
+static DRESULT nand_disk_ioctl(BYTE pdrv, BYTE cmd, void *buffer) {
+	if (nand_disk_status(pdrv)) return RES_NOTRDY;
+	uint32_t value = 0;
+	switch (cmd) {
+	case CTRL_SYNC:
+		return spi_nand_flash_sync(nand_flash_device_handle) == ESP_OK ? RES_OK : RES_ERROR;
+	case GET_SECTOR_COUNT:
+		if (spi_nand_flash_get_page_count(nand_flash_device_handle, &value) != ESP_OK) return RES_ERROR;
+		*(DWORD *)buffer = value;
+		return RES_OK;
+	case GET_SECTOR_SIZE:
+		if (spi_nand_flash_get_page_size(nand_flash_device_handle, &value) != ESP_OK) return RES_ERROR;
+		*(WORD *)buffer = value;
+		return RES_OK;
+	case GET_BLOCK_SIZE:
+		if (spi_nand_flash_get_block_size(nand_flash_device_handle, &value) != ESP_OK) return RES_ERROR;
+		*(DWORD *)buffer = value / nand_sector_size;
+		return RES_OK;
+	default:
+		return RES_PARERR;
+	}
+}
+
+static const ff_diskio_impl_t nand_diskio = {
+	.init = nand_disk_initialize,
+	.status = nand_disk_status,
+	.read = nand_disk_read,
+	.write = nand_disk_write,
+	.ioctl = nand_disk_ioctl,
+};
+
+static esp_err_t nand_format(const esp_vfs_fat_mount_config_t *config) {
+	const size_t workbuf_size = 4096;
+	void *workbuf = malloc(workbuf_size);
+	if (!workbuf) return ESP_ERR_NO_MEM;
+
+	size_t allocation_unit = config->allocation_unit_size;
+	const size_t max_allocation_unit = nand_sector_size * 128;
+	if (allocation_unit < nand_sector_size) allocation_unit = nand_sector_size;
+	if (allocation_unit > max_allocation_unit) allocation_unit = max_allocation_unit;
+	const MKFS_PARM options = {
+		.fmt = FM_ANY,
+		.n_fat = config->use_one_fat ? 1 : 2,
+		.align = 0,
+		.n_root = 0,
+		.au_size = allocation_unit,
+	};
+	FRESULT result = f_mkfs(nand_fat_drive, &options, workbuf, workbuf_size);
+	free(workbuf);
+	return result == FR_OK ? ESP_OK : ESP_FAIL;
+}
 
 static void print_header(log_header *h, FILE *file) {
 	fprintf(file, "%s:%s:%s:%d:%d:%d",
@@ -366,14 +453,26 @@ bool log_mount_nand_flash(int pin_mosi, int pin_miso, int pin_sck, int pin_cs, i
 			.flags = SPI_DEVICE_HALFDUPLEX,
 	};
 
-	spi_device_handle_t spi;
-	spi_bus_add_device(SPI2_HOST, &devcfg, &spi);
+	if (spi_bus_add_device(SPI2_HOST, &devcfg, &nand_spi_device) != ESP_OK) {
+		return false;
+	}
 
 	spi_nand_flash_config_t nand_flash_config = {
-			.device_handle = spi,
+			.device_handle = nand_spi_device,
 	};
 
-	spi_nand_flash_init_device(&nand_flash_config, &nand_flash_device_handle);
+	if (spi_nand_flash_init_device(&nand_flash_config, &nand_flash_device_handle) != ESP_OK) {
+		spi_bus_remove_device(nand_spi_device);
+		nand_spi_device = NULL;
+		return false;
+	}
+	if (spi_nand_flash_get_page_size(nand_flash_device_handle, &nand_sector_size) != ESP_OK || nand_sector_size != CONFIG_WL_SECTOR_SIZE) {
+		spi_nand_flash_deinit_device(nand_flash_device_handle);
+		nand_flash_device_handle = NULL;
+		spi_bus_remove_device(nand_spi_device);
+		nand_spi_device = NULL;
+		return false;
+	}
 
 	esp_vfs_fat_mount_config_t config = {
 			.max_files = 4,
@@ -381,21 +480,57 @@ bool log_mount_nand_flash(int pin_mosi, int pin_miso, int pin_sck, int pin_cs, i
 			.allocation_unit_size = 16 * 1024
 	};
 
-	file_basepath = "/nandflash/";
-	ret = esp_vfs_fat_nand_mount("/nandflash", nand_flash_device_handle, &config);
+	ret = ff_diskio_get_drive(&nand_pdrv);
+	if (ret != ESP_OK) goto fail;
+	nand_fat_drive[0] = '0' + nand_pdrv;
+	ff_diskio_register(nand_pdrv, &nand_diskio);
 
-	if (ret != ESP_OK) {
-		return false;
+	esp_vfs_fat_conf_t vfs_config = {
+		.base_path = "/nandflash",
+		.fat_drive = nand_fat_drive,
+		.max_files = config.max_files,
+	};
+	ret = esp_vfs_fat_register(&vfs_config, &nand_fs);
+	if (ret != ESP_OK) goto fail_diskio;
+	if (f_mount(nand_fs, nand_fat_drive, 1) != FR_OK) {
+		if (!config.format_if_mount_failed || nand_format(&config) != ESP_OK ||
+				f_mount(nand_fs, nand_fat_drive, 1) != FR_OK) {
+			ret = ESP_FAIL;
+			goto fail_vfs;
+		}
 	}
 
+	file_basepath = "/nandflash/";
+
 	return true;
+
+fail_vfs:
+	esp_vfs_fat_unregister_path("/nandflash");
+	nand_fs = NULL;
+fail_diskio:
+	ff_diskio_unregister(nand_pdrv);
+	nand_pdrv = FF_DRV_NOT_USED;
+fail:
+	spi_nand_flash_deinit_device(nand_flash_device_handle);
+	nand_flash_device_handle = NULL;
+	spi_bus_remove_device(nand_spi_device);
+	nand_spi_device = NULL;
+	return false;
 }
 
 void log_unmount_nand_flash (void) {
 	if (nand_flash_device_handle) {
-		esp_vfs_fat_nand_unmount("/nandflash", nand_flash_device_handle);
+		f_mount(NULL, nand_fat_drive, 0);
+		esp_vfs_fat_unregister_path("/nandflash");
+		ff_diskio_unregister(nand_pdrv);
+	nand_pdrv = FF_DRV_NOT_USED;
+	nand_fs = NULL;
+	nand_sector_size = 0;
 		spi_nand_flash_deinit_device(nand_flash_device_handle);
-		nand_flash_device_handle = 0;
+		nand_flash_device_handle = NULL;
+		spi_bus_remove_device(nand_spi_device);
+		nand_spi_device = NULL;
+		spi_bus_free(SPI2_HOST);
 	}
 }
 

@@ -19,7 +19,8 @@
 
 #include "hw_vdisp_900.h"
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
+#include "main.h"
 #include "extensions.h"
 #include "heap.h"
 #include "soc/gpio_struct.h"
@@ -58,6 +59,7 @@
 	GPIO_EXP_UPDATE_PORT0()
 
 static SemaphoreHandle_t i2c_mutex;
+static i2c_master_bus_handle_t i2c_bus;
 static uint8_t io_port0 = 0;
 
 static int display_width  = 0;
@@ -77,21 +79,28 @@ static esp_err_t i2c_tx_rx(
 
 	xSemaphoreTake(i2c_mutex, portMAX_DELAY);
 
-	esp_err_t res;
+	i2c_device_config_t device_config = {
+		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+		.device_address = addr,
+		.scl_speed_hz = 400000,
+	};
+	i2c_master_dev_handle_t device = NULL;
+	esp_err_t res = i2c_master_bus_add_device(i2c_bus, &device_config, &device);
+	if (res != ESP_OK) {
+		xSemaphoreGive(i2c_mutex);
+		return res;
+	}
 	if (read_size > 0 && read_buffer != NULL) {
 		if (write_size > 0 && write_buffer != NULL) {
-			res = i2c_master_write_read_device(
-				0, addr, write_buffer, write_size, read_buffer, read_size, 2000
-			);
+			res = i2c_master_transmit_receive(device, write_buffer, write_size,
+					read_buffer, read_size, 2000);
 		} else {
-			res = i2c_master_read_from_device(
-				0, addr, read_buffer, read_size, 2000
-			);
+			res = i2c_master_receive(device, read_buffer, read_size, 2000);
 		}
 	} else {
-		res =
-			i2c_master_write_to_device(0, addr, write_buffer, write_size, 2000);
+		res = i2c_master_transmit(device, write_buffer, write_size, 2000);
 	}
+	i2c_master_bus_rm_device(device);
 	xSemaphoreGive(i2c_mutex);
 
 	return res;
@@ -170,12 +179,7 @@ static lbm_value ext_i2c_detect_addr(lbm_value *args, lbm_uint argn) {
 
 	uint8_t address = lbm_dec_as_u32(args[0]);
 	xSemaphoreTake(i2c_mutex, portMAX_DELAY);
-	i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-	i2c_master_start(cmd);
-	i2c_master_write_byte(cmd, (address << 1) | I2C_MASTER_WRITE, true);
-	i2c_master_stop(cmd);
-	esp_err_t ret = i2c_master_cmd_begin(0, cmd, 50 / portTICK_PERIOD_MS);
-	i2c_cmd_link_delete(cmd);
+	esp_err_t ret = i2c_master_probe(i2c_bus, address, 50 / portTICK_PERIOD_MS);
 	xSemaphoreGive(i2c_mutex);
 
 	return ret == ESP_OK ? ENC_SYM_TRUE : ENC_SYM_NIL;
@@ -776,16 +780,14 @@ static void load_extensions(bool main_found) {
 void hw_init(void) {
 	i2c_mutex = xSemaphoreCreateMutex();
 
-	i2c_config_t conf = {
-		.mode             = I2C_MODE_MASTER,
-		.sda_io_num       = I2C_SDA,
-		.scl_io_num       = I2C_SCL,
-		.sda_pullup_en    = GPIO_PULLUP_ENABLE,
-		.scl_pullup_en    = GPIO_PULLUP_ENABLE,
-		.master.clk_speed = 400000,
+	i2c_master_bus_config_t i2c_config = {
+		.i2c_port = I2C_NUM_0,
+		.sda_io_num = I2C_SDA,
+		.scl_io_num = I2C_SCL,
+		.glitch_ignore_cnt = 7,
+		.flags.enable_internal_pullup = true,
 	};
-	i2c_param_config(0, &conf);
-	i2c_driver_install(0, conf.mode, 0, 0, 0);
+	i2c_new_master_bus(&i2c_config, &i2c_bus);
 
 	gpio_config_t gpconf = {0};
 	gpconf.pin_bit_mask  = 0xff | BIT(DISP_WR);

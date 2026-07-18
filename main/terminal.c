@@ -29,7 +29,6 @@
 #include <ctype.h>
 
 #if !CONFIG_IDF_TARGET_ESP32P4
-#include "esp_bt.h"
 #include "esp_wifi.h"
 #endif
 #include "comm_ble.h"

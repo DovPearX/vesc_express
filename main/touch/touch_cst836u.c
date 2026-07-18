@@ -27,7 +27,8 @@
 #define TOUCH_CST836U_READ_REG 0x02
 #define TOUCH_CST836U_READ_LEN 5
 
-static i2c_port_t cst836u_i2c_port = I2C_NUM_0;
+static i2c_master_bus_handle_t cst836u_i2c_bus = NULL;
+static i2c_master_dev_handle_t cst836u_i2c_device = NULL;
 static uint16_t cst836u_width = 0;
 static uint16_t cst836u_height = 0;
 static uint16_t cst836u_raw_width = 0;
@@ -189,12 +190,16 @@ static void cst836u_apply_transforms(lispif_touch_point_data_t *point) {
 	point->y = y;
 }
 
-esp_err_t touch_cst836u_init(i2c_port_t port, uint16_t width, uint16_t height, lispif_touch_driver_t *driver) {
+esp_err_t touch_cst836u_init(i2c_master_bus_handle_t bus, uint16_t width, uint16_t height, lispif_touch_driver_t *driver) {
 	if (!driver) {
 		return ESP_ERR_INVALID_ARG;
 	}
 
-	cst836u_i2c_port = port;
+	cst836u_i2c_bus = bus;
+	i2c_device_config_t config = {.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+		.device_address = TOUCH_CST836U_I2C_ADDR, .scl_speed_hz = 400000};
+	esp_err_t result = i2c_master_bus_add_device(cst836u_i2c_bus, &config, &cst836u_i2c_device);
+	if (result != ESP_OK) return result;
 	cst836u_width = width;
 	cst836u_height = height;
 	cst836u_set_default_raw_geometry(width, height);
@@ -234,9 +239,7 @@ esp_err_t touch_cst836u_read_data(void) {
 	uint8_t reg = TOUCH_CST836U_READ_REG;
 	uint8_t raw[TOUCH_CST836U_READ_LEN] = {0};
 
-	esp_err_t res = i2c_master_write_read_device(
-			cst836u_i2c_port,
-			TOUCH_CST836U_I2C_ADDR,
+	esp_err_t res = i2c_master_transmit_receive(cst836u_i2c_device,
 			&reg,
 			1,
 			raw,

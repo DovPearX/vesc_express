@@ -19,7 +19,7 @@
 
 #include "hw_bms_rb.h"
 #include "main.h"
-#include "driver/i2c.h"
+#include "main.h"
 #include "esp_sleep.h"
 #include "lispif.h"
 #include "lispbm.h"
@@ -56,6 +56,7 @@
 
 // Variables
 static SemaphoreHandle_t i2c_mutex;
+static i2c_master_bus_handle_t i2c_bus;
 static SemaphoreHandle_t bq_mutex;
 static int m_offset = 0.0;
 static int m_gain = 0.0;
@@ -78,9 +79,11 @@ static esp_err_t i2c_tx_rx(uint8_t addr,
 	esp_err_t res;
 
 	if (read_buffer != NULL) {
-		res = i2c_master_write_read_device(0, addr, write_buffer, write_size, read_buffer, read_size, 500);
+		i2c_device_config_t config = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = addr, .scl_speed_hz = 100000}; i2c_master_dev_handle_t device = NULL;
+		res = i2c_master_bus_add_device(i2c_bus, &config, &device); if (res == ESP_OK) { res = i2c_master_transmit_receive(device, write_buffer, write_size, read_buffer, read_size, 500); i2c_master_bus_rm_device(device); }
 	} else {
-		res = i2c_master_write_to_device(0, addr, write_buffer, write_size, 500);
+		i2c_device_config_t config = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = addr, .scl_speed_hz = 100000}; i2c_master_dev_handle_t device = NULL;
+		res = i2c_master_bus_add_device(i2c_bus, &config, &device); if (res == ESP_OK) { res = i2c_master_transmit(device, write_buffer, write_size, 500); i2c_master_bus_rm_device(device); }
 	}
 	xSemaphoreGive(i2c_mutex);
 
@@ -236,22 +239,11 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 
 	// Restart i2c
 
-	i2c_driver_delete(0);
+	i2c_del_master_bus(i2c_bus);
+	i2c_bus = NULL;
 
-	i2c_config_t conf = {
-			.mode = I2C_MODE_MASTER,
-			.sda_io_num = PIN_SDA,
-			.scl_io_num = PIN_SCL,
-			.sda_pullup_en = GPIO_PULLUP_ENABLE,
-			.scl_pullup_en = GPIO_PULLUP_ENABLE,
-			.master.clk_speed = 100000,
-	};
-
-	i2c_param_config(0, &conf);
-	i2c_driver_install(0, conf.mode, 0, 0, 0);
-
-	i2c_reset_tx_fifo(0);
-	i2c_reset_rx_fifo(0);
+	i2c_master_bus_config_t config = {.i2c_port = I2C_NUM_0, .sda_io_num = PIN_SDA, .scl_io_num = PIN_SCL, .glitch_ignore_cnt = 7, .flags.enable_internal_pullup = true};
+	i2c_new_master_bus(&config, &i2c_bus);
 
 	m_bq_active = true;
 
@@ -420,11 +412,11 @@ static lbm_value ext_set_btn_wakeup_state(lbm_value *args, lbm_uint argn) {
 
 	switch (lbm_dec_as_i32(args[0])) {
 	case 0:
-		esp_deep_sleep_enable_gpio_wakeup(1 << PIN_ENABLE, ESP_GPIO_WAKEUP_GPIO_HIGH);
+		esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_ENABLE, ESP_EXT1_WAKEUP_ANY_HIGH);
 		break;
 
 	case 1:
-		esp_deep_sleep_enable_gpio_wakeup(1 << PIN_ENABLE, ESP_GPIO_WAKEUP_GPIO_LOW);
+		esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_ENABLE, ESP_EXT1_WAKEUP_ANY_LOW);
 		break;
 
 	default:
@@ -830,17 +822,8 @@ void hw_init(void) {
 	i2c_mutex = xSemaphoreCreateMutex();
 	bq_mutex = xSemaphoreCreateMutex();
 
-	i2c_config_t conf = {
-			.mode = I2C_MODE_MASTER,
-			.sda_io_num = PIN_SDA,
-			.scl_io_num = PIN_SCL,
-			.sda_pullup_en = GPIO_PULLUP_ENABLE,
-			.scl_pullup_en = GPIO_PULLUP_ENABLE,
-			.master.clk_speed = 100000,
-	};
-
-	i2c_param_config(0, &conf);
-	i2c_driver_install(0, conf.mode, 0, 0, 0);
+	i2c_master_bus_config_t config = {.i2c_port = I2C_NUM_0, .sda_io_num = PIN_SDA, .scl_io_num = PIN_SCL, .glitch_ignore_cnt = 7, .flags.enable_internal_pullup = true};
+	i2c_new_master_bus(&config, &i2c_bus);
 
 	lispif_add_ext_load_callback(load_extensions);
 
