@@ -1,6 +1,7 @@
 #ifndef HW_DEVKIT_S3_FH4_H_
 #define HW_DEVKIT_S3_FH4_H_
 
+                                // [4mb flash; 2mb PSRAM] FH4R2
 #define HW_NAME                 "Devkit S3 FH4"
 #define HW_TARGET               "esp32s3_fh4"
 #define HW_UART_COMM

@@ -20,8 +20,9 @@
 #ifndef MAIN_HWCONF_DEVKIT_C3_H_
 #define MAIN_HWCONF_DEVKIT_C3_H_
 
-#define HW_NAME						"Devkit C3"
-#define HW_TARGET					"esp32c3"
+                                    // [4mb flash] FN4 / FH4 / FH4AZ / FH4X
+#define HW_NAME						"Devkit C3 FH4"
+#define HW_TARGET					"esp32c3_fh4"
 #define HW_UART_COMM
 
 #define HW_INIT_HOOK()				hw_init()

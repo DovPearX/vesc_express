@@ -15,12 +15,25 @@
 
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
+    */
 
-#include "hw_devkit_c3.h"
-#include "lispif.h"
-#include "lispbm.h"
+#ifndef MAIN_HWCONF_DEVKIT_C3_H_
+#define MAIN_HWCONF_DEVKIT_C3_H_
 
-void hw_init(void) {
+                                    // [8mb flash] FH8X
+#define HW_NAME						"Devkit C3 FH8"
+#define HW_TARGET					"esp32c3_fh8"
+#define HW_UART_COMM
 
-}
+#define HW_INIT_HOOK()				hw_init()
+
+// UART
+#define UART_NUM					0
+#define UART_BAUDRATE				115200
+#define UART_TX						21
+#define UART_RX						20
+
+// Functions
+void hw_init(void);
+
+#endif /* MAIN_HWCONF_DEVKIT_C3_H_ */
