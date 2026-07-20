@@ -15,14 +15,14 @@ p, li { white-space: pre-wrap; }
             <maxLen>0</maxLen>
         </config_name>
         <hw_name>
-            <longName>VESC Express</longName>
+            <longName>TSME</longName>
             <type>0</type>
             <transmittable>0</transmittable>
             <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
 &lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
 p, li { white-space: pre-wrap; }
 &lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;This is the VESC Express Logging and Communication Module.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;This is the TSME Module.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine></cDefine>
         </hw_name>
         <controller_id>
@@ -41,7 +41,7 @@ p, li { white-space: pre-wrap; }
             <minInt>1</minInt>
             <showDisplay>0</showDisplay>
             <stepInt>1</stepInt>
-            <valInt>2</valInt>
+            <valInt>10</valInt>
             <suffix></suffix>
             <vTx>4</vTx>
         </controller_id>
@@ -61,7 +61,7 @@ p, li { white-space: pre-wrap; }
             <minInt>0</minInt>
             <showDisplay>0</showDisplay>
             <stepInt>1</stepInt>
-            <valInt>20</valInt>
+            <valInt>0</valInt>
             <suffix> Hz</suffix>
             <vTx>4</vTx>
         </can_status_rate_hz>
@@ -106,7 +106,7 @@ p, li { white-space: pre-wrap; }
 &lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;NOTE:&lt;/span&gt;&lt;/p&gt;
 &lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Wifi-settings will be applied after a reboot.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_WIFI_MODE</cDefine>
-            <valInt>2</valInt>
+            <valInt>0</valInt>
             <enumNames>WiFi Disabled</enumNames>
             <enumNames>Station</enumNames>
             <enumNames>Access Point</enumNames>
@@ -269,11 +269,10 @@ p, li { white-space: pre-wrap; }
 &lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;NOTE:&lt;/span&gt;&lt;/p&gt;
 &lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth settings will be applied after a reboot.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BLE_MODE</cDefine>
-            <valInt>1</valInt>
+            <valInt>0</valInt>
             <enumNames>Disabled</enumNames>
             <enumNames>Enabled</enumNames>
             <enumNames>Enabled and Encrypted</enumNames>
-            <enumNames>Enabled with Scripting</enumNames>
         </ble_mode>
         <ble_name>
             <longName>Name</longName>
@@ -290,7 +289,7 @@ p, li { white-space: pre-wrap; }
 &lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;NOTE:&lt;/span&gt;&lt;/p&gt;
 &lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth and wifi settings will be applied after a reboot.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BLE_NAME</cDefine>
-            <valString>ExpressT</valString>
+            <valString>TSME</valString>
             <maxLen>8</maxLen>
         </ble_name>
         <ble_pin>
@@ -397,37 +396,6 @@ p, li { white-space: pre-wrap; }
                     <param>controller_id</param>
                     <param>can_baud_rate</param>
                     <param>can_status_rate_hz</param>
-                </subgroupParams>
-            </subgroup>
-            <subgroup>
-                <subgroupName>WiFi</subgroupName>
-                <subgroupParams>
-                    <param>ble_name</param>
-                    <param>wifi_mode</param>
-                    <param>::sep::Station Mode</param>
-                    <param>wifi_sta_ssid</param>
-                    <param>wifi_sta_key</param>
-                    <param>::sep::Access Point Mode</param>
-                    <param>wifi_ap_ssid</param>
-                    <param>wifi_ap_key</param>
-                    <param>::sep::TCP Local</param>
-                    <param>use_tcp_local</param>
-                    <param>::sep::TCP Hub</param>
-                    <param>use_tcp_hub</param>
-                    <param>tcp_hub_url</param>
-                    <param>tcp_hub_port</param>
-                    <param>tcp_hub_id</param>
-                    <param>tcp_hub_pass</param>
-                </subgroupParams>
-            </subgroup>
-            <subgroup>
-                <subgroupName>Bluetooth</subgroupName>
-                <subgroupParams>
-                    <param>ble_name</param>
-                    <param>ble_mode</param>
-                    <param>ble_pin</param>
-                    <param>ble_service_capacity</param>
-                    <param>ble_chr_descr_capacity</param>
                 </subgroupParams>
             </subgroup>
         </group>

@@ -5,7 +5,7 @@
 
 // CAN ID
 #ifndef CONF_CONTROLLER_ID
-#define CONF_CONTROLLER_ID 2
+#define CONF_CONTROLLER_ID 10
 #endif
 
 // CAN Baud Rate
@@ -15,12 +15,12 @@
 
 // Status Message Rate
 #ifndef CONF_CAN_STATUS_RATE_HZ
-#define CONF_CAN_STATUS_RATE_HZ 20
+#define CONF_CAN_STATUS_RATE_HZ 0
 #endif
 
 // WiFi Mode
 #ifndef CONF_WIFI_MODE
-#define CONF_WIFI_MODE 2
+#define CONF_WIFI_MODE 0
 #endif
 
 // Station Mode SSID
@@ -75,12 +75,12 @@
 
 // Bluetooth Mode
 #ifndef CONF_BLE_MODE
-#define CONF_BLE_MODE 1
+#define CONF_BLE_MODE 0
 #endif
 
 // Name
 #ifndef CONF_BLE_NAME
-#define CONF_BLE_NAME "Express"
+#define CONF_BLE_NAME "TSME"
 #endif
 
 // Bluetooth Pin Code
