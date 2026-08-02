@@ -16,6 +16,7 @@ set(COMPONENT_SRCS
 "terminal.c"
 "mempools.c"
 "log.c"
+"vesc_nand_fat.c"
 "adc.c"
 "ublox.c"
 "nmea.c"
