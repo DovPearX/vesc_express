@@ -1,6 +1,7 @@
 #ifndef MAIN_HWCONF_DEVKIT_C6_FH4_H_
 #define MAIN_HWCONF_DEVKIT_C6_FH4_H_
 
+                                    // [4mb flash] FH4
 #define HW_NAME                     "Devkit C6 FH4"
 #define HW_TARGET                   "esp32c6_fh4"
 #define HW_UART_COMM
