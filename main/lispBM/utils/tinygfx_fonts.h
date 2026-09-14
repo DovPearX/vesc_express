@@ -29,6 +29,7 @@
 
 // More than one font can be compiled in at once. USE_TINYGFX_FONT_ALL is a
 // shorthand for enabling all of them.
+#define USE_TINYGFX_FONT_ALL
 #ifdef USE_TINYGFX_FONT_ALL
 #define USE_TINYGFX_FONT_0
 #define USE_TINYGFX_FONT_1
