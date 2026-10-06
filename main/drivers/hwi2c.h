@@ -1,5 +1,5 @@
 /*
-	Copyright 2024 Benjamin Vedder	benjamin@vedder.se
+	Copyright 2022 Benjamin Vedder	benjamin@vedder.se
 
 	This file is part of the VESC firmware.
 
@@ -15,27 +15,19 @@
 
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
+    */
 
-#include "hw_link.h"
+#ifndef MAIN_DRIVERS_HWI2C_H_
+#define MAIN_DRIVERS_HWI2C_H_
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "hw.h"
-#include "esp_rom_gpio.h"
-#include "soc/gpio_sig_map.h"
-#include "driver/gpio.h"
-#include "lispif_disp_extensions.h"
-#include "disp_st7789.h"
-#include "esp_sleep.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include "driver/i2c_master.h"
 
-#include "lispif.h"
-#include "lispbm.h"
-#include "extensions/display_extensions.h"
-#include "terminal.h"
-#include "commands.h"
-#include "utils.h"
+esp_err_t hwi2c_init(i2c_port_num_t port, int sda, int scl, uint32_t speed, bool pullup);
+esp_err_t hwi2c_stop(i2c_port_num_t port);
+i2c_master_bus_handle_t hwi2c_bus(i2c_port_num_t port);
+esp_err_t hwi2c_tx_rx(i2c_port_num_t port, uint8_t addr, const uint8_t *tx, size_t txlen, uint8_t *rx, size_t rxlen, int timeout_ms);
 
-void hw_init(void) {
-	
-}
+#endif /* MAIN_DRIVERS_HWI2C_H_ */

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.22)
 
 # You can set a HW here when e.g. building with the eclipse plugin
 # set(HW_NAME "Wcore")
@@ -54,12 +54,10 @@ foreach(HW_HEADER_PATH ${HW_HEADER_PATHS})
                 set(IS_HW_MATCH true)
             endif()
 
-            if (IS_HW_MATCH)
-                if (DEF_KEY STREQUAL "HW_TARGET")
-                    set(FILE_HW_TARGET ${DEF_VAL})
-                elseif(DEF_KEY STREQUAL "HW_INTERNAL_FS")
-                    set(FILE_HW_INTERNAL_FS 1)
-                endif()
+            if (DEF_KEY STREQUAL "HW_TARGET")
+                set(FILE_HW_TARGET ${DEF_VAL})
+            elseif(DEF_KEY STREQUAL "HW_INTERNAL_FS")
+                set(FILE_HW_INTERNAL_FS 1)
             endif()
         endif()
     endforeach()
@@ -93,7 +91,7 @@ if(DEFINED HW_NAME AND DEFINED HW_TARGET AND DEFINED HW_FILE_NAME)
     endif()
     
     # Pass through hw file paths
-    add_compile_definitions(HW_HEADER="${HW_FILE}.h" HW_SOURCE="${HW_FILE}.c")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${HW_FILE_NAME}")
 
     set(SDKCONFIG_DEFAULTS_FILE "sdkconfig.defaults.${HW_IDF_TARGET}")
     set(HW_TARGET_SDKCONFIG_DEFAULTS_FILE "sdkconfig.defaults.${HW_TARGET}")
@@ -103,6 +101,7 @@ if(DEFINED HW_NAME AND DEFINED HW_TARGET AND DEFINED HW_FILE_NAME)
     else()
         message(STATUS "Using shared sdkconfig defaults ${SDKCONFIG_DEFAULTS_FILE} for ${HW_NAME}")
     endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${SDKCONFIG_DEFAULTS_FILE}")
     set(SDKCONFIG_DEFAULTS ${SDKCONFIG_DEFAULTS_FILE})
 
     # Auto-generate QML files if any *.qml files exist alongside the HW config
@@ -146,6 +145,7 @@ set(PROJECT_VER "6.0")
 
 # Include ESP-IDF project cmake
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+idf_build_set_property(VESC_HW_FILE ${HW_FILE})
 
 # ESP-IDF remainder boilerplate
 get_filename_component(ProjectId ${CMAKE_CURRENT_LIST_DIR} NAME)

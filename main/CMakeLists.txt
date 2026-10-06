@@ -1,6 +1,3 @@
-set(COMPONENT_REQUIRES )
-set(COMPONENT_PRIV_REQUIRES )
-
 set(COMPONENT_SRCS
 "main.c"
 "buffer.c"
@@ -95,6 +92,7 @@ set(COMPONENT_SRCS
 
 "drivers/bme280/bme280.c"
 "drivers/bme280/bme280_if.c"
+"drivers/hwi2c.c"
 "drivers/hwspi.c"
 "drivers/spi_bb.c"
 "drivers/enc_as504x.c"
@@ -149,7 +147,14 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "lowzip"
 )
 
-register_component()
+idf_component_register(SRCS ${COMPONENT_SRCS}
+    INCLUDE_DIRS ${COMPONENT_ADD_INCLUDEDIRS}
+)
+
+if(NOT DEFINED ENV{HW_SRC} AND NOT DEFINED ENV{HW_HEADER})
+    idf_build_get_property(hw_file VESC_HW_FILE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE HW_HEADER="${hw_file}.h" HW_SOURCE="${hw_file}.c")
+endif()
 
 add_compile_definitions(
     LBM_USE_DYN_FUNS
