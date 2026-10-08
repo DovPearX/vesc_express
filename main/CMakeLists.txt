@@ -103,7 +103,7 @@ set(COMPONENT_SRCS
 "lowzip/lowzip.c"
 )
 
-if(CONFIG_BT_BLUEDROID_ENABLED)
+if(CONFIG_BT_NIMBLE_ENABLED)
     list(APPEND COMPONENT_SRCS
         "ble/lispif_ble_extensions.c"
     )

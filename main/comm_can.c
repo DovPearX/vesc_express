@@ -23,6 +23,8 @@
 #include "datatypes.h"
 #include "buffer.h"
 #include "driver/twai.h"
+#include "driver/gpio.h"
+#include "esp_rom_gpio.h"
 #include "comm_can.h"
 #include "datatypes.h"
 #include "conf_general.h"

@@ -104,6 +104,11 @@ void app_main(void) {
 			backup.can_baud_rate_init_flag = VAR_INIT_CODE;
 		}
 
+#ifndef OVR_CONF_MAIN_CONFIG
+		if (backup.config_init_flag == 1954583966 && MAIN_CONFIG_T_SIGNATURE == 2748567907) {
+			backup.config_init_flag = MAIN_CONFIG_T_SIGNATURE;
+		}
+#endif
 		if (backup.config_init_flag != MAIN_CONFIG_T_SIGNATURE) {
 #ifdef OVR_CONF_SET_DEFAULTS
 			OVR_CONF_SET_DEFAULTS((main_config_t*)(&backup.config));
@@ -136,7 +141,7 @@ void app_main(void) {
 
 	vTaskDelay(1);
 
-	#if CONFIG_BT_BLUEDROID_ENABLED
+	#if CONFIG_BT_NIMBLE_ENABLED
 	switch (backup.config.ble_mode) {
 		case BLE_MODE_DISABLED: {
 			break;
@@ -146,8 +151,11 @@ void app_main(void) {
 			comm_ble_init();
 			break;
 		}
-		case BLE_MODE_SCRIPTING: {
+		case BLE_MODE_SCRIPTING:
+		case BLE_MODE_SCRIPTING_SERVER:
+		case BLE_MODE_SCRIPTING_CLIENT: {
 			custom_ble_init();
+			comm_ble_init();
 			break;
 		}
 	}

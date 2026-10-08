@@ -6983,12 +6983,6 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lispif_load_wifi_extensions();
 		#endif
 
-		if (backup.config.ble_mode == BLE_MODE_SCRIPTING) {
-			#if CONFIG_BT_BLUEDROID_ENABLED
-			lispif_load_ble_extensions();
-			#endif
-		}
-
 		// CAN-Messages
 		lbm_add_extension("canmsg-recv", ext_canmsg_recv);
 		lbm_add_extension("canmsg-send", ext_canmsg_send);
@@ -7111,6 +7105,10 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_array_extensions_init();
 		lbm_string_extensions_init();
 	}
+
+	#if CONFIG_BT_NIMBLE_ENABLED
+	lispif_load_ble_extensions(backup.config.ble_mode);
+	#endif
 
 	lbm_set_dynamic_load_callback(dynamic_loader);
 }
