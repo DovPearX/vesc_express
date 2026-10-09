@@ -39,10 +39,16 @@ static void rx_task(void *arg) {
 	state->is_running = true;
 
 	while (!state->should_stop) {
-		uint8_t buf[1];
+		uint8_t buf[64];
 		int bytes = uart_read_bytes(state->uart_num, buf, 1, 3);
-		if (bytes > 0) {
-			packet_process_byte(buf[0], &(state->packet_state));
+		if (bytes == 1) {
+			int pending = uart_read_bytes(state->uart_num, buf + 1, sizeof(buf) - 1, 0);
+			if (pending > 0) {
+				bytes += pending;
+			}
+		}
+		for (int i = 0;i < bytes;i++) {
+			packet_process_byte(buf[i], &(state->packet_state));
 		}
 
 		// Check if this uart has been stopped externally

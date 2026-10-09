@@ -88,7 +88,7 @@
 #include "nvs_flash.h"
 #include "esp_sleep.h"
 #include "soc/rtc.h"
-#include "esp_private/esp_clk.h"
+#include "esp_clk_tree.h"
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
 
@@ -1156,7 +1156,11 @@ static lbm_value ext_sysinfo(lbm_value *args, lbm_uint argn) {
 			res = ENC_SYM_MERROR;
 		}
 	} else if (compare_symbol(name, &syms_vesc.cpu_freq)) {
-		res = lbm_enc_i(esp_clk_cpu_freq() / 1000000);
+		uint32_t freq;
+		if (esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU, ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &freq) != ESP_OK) {
+			return ENC_SYM_EERROR;
+		}
+		res = lbm_enc_i(freq / 1000000);
 	}
 
 	return res;

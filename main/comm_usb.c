@@ -39,9 +39,11 @@ static PACKET_STATE_t packet_state;
 
 static void rx_task(void *arg) {
 	for (;;) {
-		uint8_t buf[1];
-		usb_serial_jtag_read_bytes(buf, 1, portMAX_DELAY);
-		packet_process_byte(buf[0], &packet_state);
+		uint8_t buf[64];
+		int bytes = usb_serial_jtag_read_bytes(buf, sizeof(buf), portMAX_DELAY);
+		for (int i = 0;i < bytes;i++) {
+			packet_process_byte(buf[i], &packet_state);
+		}
 	}
 }
 

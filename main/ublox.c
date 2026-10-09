@@ -130,10 +130,16 @@ static void rx_task(void *arg) {
 			break;
 		}
 
-		uint8_t c;
-		int res = uart_read_bytes(m_uart_num, &c, 1, 10);
-		if (res == 1) {
-			proc_byte(c);
+		uint8_t buf[64];
+		int bytes = uart_read_bytes(m_uart_num, buf, 1, 10);
+		if (bytes == 1) {
+			int pending = uart_read_bytes(m_uart_num, buf + 1, sizeof(buf) - 1, 0);
+			if (pending > 0) {
+				bytes += pending;
+			}
+		}
+		for (int i = 0;i < bytes;i++) {
+			proc_byte(buf[i]);
 		}
 	}
 
