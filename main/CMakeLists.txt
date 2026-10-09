@@ -72,6 +72,7 @@ set(COMPONENT_SRCS
 
 "touch/lispif_touch_extensions.c"
 "touch/touch_cst836u.c"
+"touch/touch_axs5106.c"
 
 "display/lispif_disp_extensions.c"
 "display/disp_sh8501b.c"
@@ -157,6 +158,7 @@ if(NOT DEFINED ENV{HW_SRC} AND NOT DEFINED ENV{HW_HEADER})
 endif()
 
 add_compile_definitions(
+    USE_TINYGFX_FONT_ALL
     LBM_USE_DYN_FUNS
     LBM_USE_DYN_MACROS
     LBM_USE_DYN_LOOPS
