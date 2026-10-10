@@ -23,6 +23,7 @@
 #include "buffer.h"
 #include "nvs_flash.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -40,6 +41,10 @@ static _code_checks m_code_checks[2] = {0};
 static flast_stats m_stats = {0};
 
 static const esp_partition_t* get_partition(int ind) {
+	if (ind != CODE_IND_QML && ind != CODE_IND_LISP) {
+		return NULL;
+	}
+
 	return esp_partition_find_first(
 			ESP_PARTITION_TYPE_ANY,
 			ESP_PARTITION_SUBTYPE_ANY,
@@ -47,14 +52,13 @@ static const esp_partition_t* get_partition(int ind) {
 }
 
 static bool perform_mmap(int ind) {
-	if (m_code_checks[ind].mmap_done)  {
-		return true;
-	}
-
 	const esp_partition_t *part = get_partition(ind);
-
 	if (!part) {
 		return false;
+	}
+
+	if (m_code_checks[ind].mmap_done) {
+		return true;
 	}
 
 	esp_err_t res = esp_partition_mmap(part, 0, part->size, ESP_PARTITION_MMAP_DATA,
@@ -64,19 +68,18 @@ static bool perform_mmap(int ind) {
 	return m_code_checks[ind].mmap_done;
 }
 
-static void code_check(int ind) {
-	if (m_code_checks[ind].check_done) {
-		return;
-	}
-
+static bool code_check(int ind) {
 	const esp_partition_t *part = get_partition(ind);
-
-	if (!part) {
-		return;
+	if (!part || part->size < 8) {
+		return false;
 	}
 
-	if (!perform_mmap(ind))  {
-		return;
+	if (m_code_checks[ind].check_done) {
+		return m_code_checks[ind].ok;
+	}
+
+	if (!perform_mmap(ind)) {
+		return false;
 	}
 
 	uint8_t *base = (uint8_t*)m_code_checks[ind].addr;
@@ -100,14 +103,20 @@ static void code_check(int ind) {
 	}
 
 	m_code_checks[ind].check_done = true;
+	return m_code_checks[ind].ok;
 }
 
 bool flash_helper_erase_code(int ind, int size) {
 	(void)size;
 
 	const esp_partition_t *part = get_partition(ind);
+	if (!part || !part->erase_size || part->size < part->erase_size
+			|| part->size % part->erase_size != 0 || !perform_mmap(ind)) {
+		return false;
+	}
 
-	if (!part) {
+	uint8_t *erased_data = malloc(part->erase_size);
+	if (!erased_data) {
 		return false;
 	}
 
@@ -115,47 +124,47 @@ bool flash_helper_erase_code(int ind, int size) {
 	m_code_checks[ind].check_done = false;
 	m_code_checks[ind].ok = false;
 
-	if (!perform_mmap(ind)) {
-		return false;
-	}
-
 	// Always erase the entire partition as that allows using it as constant storage. To speed
 	// up the process erase is only performed on sectors that are not already erased.
-
-	esp_partition_erase_range(part, 0, part->erase_size);
-	uint8_t *erased_data = malloc(part->erase_size);
-	if (!erased_data) {
-		return false;
+	bool ok = esp_partition_erase_range(part, 0, part->erase_size) == ESP_OK;
+	if (ok) {
+		ok = esp_partition_read(part, 0, erased_data, part->erase_size) == ESP_OK;
 	}
 
-	esp_partition_read(part, 0, erased_data, part->erase_size);
-
-	for (uint32_t i = part->erase_size; i < part->size; i += part->erase_size) {
-		if (memcmp(m_code_checks[ind].addr + i, erased_data, part->erase_size) != 0) {
-			esp_partition_erase_range(part, i, part->erase_size);
+	for (uint32_t i = part->erase_size; ok && i < part->size; i += part->erase_size) {
+		if (memcmp((const uint8_t*)m_code_checks[ind].addr + i, erased_data, part->erase_size) != 0) {
+			ok = esp_partition_erase_range(part, i, part->erase_size) == ESP_OK;
 		}
 	}
 
 	free(erased_data);
-	return true;
+	return ok;
 }
 
 bool flash_helper_write_code(int ind, uint32_t offset, uint8_t *data, uint32_t len, uint32_t save_after) {
-	if (offset < (m_code_checks[ind].size + 8)) {
+	const esp_partition_t *part = get_partition(ind);
+	if (!part || !part->erase_size || offset > part->size || len > part->size - offset
+			|| (len && !data)) {
+		return false;
+	}
+
+	if (!len) {
+		return true;
+	}
+
+	uint8_t *data_old = flash_helper_code_data_raw(ind);
+	if (!data_old) {
+		return false;
+	}
+
+	if (offset < m_code_checks[ind].size + 8) {
 		m_code_checks[ind].size = 0;
 		m_code_checks[ind].check_done = false;
 		m_code_checks[ind].ok = false;
 	}
 
-	const esp_partition_t *part = get_partition(ind);
-
-	if (!part) {
-		return false;
-	}
-
-	uint8_t *data_old = flash_helper_code_data_raw(ind);
 	bool erased = true;
-	for (int i = 0;i < len;i++) {
+	for (uint32_t i = 0;i < len;i++) {
 		if (data_old[offset + i] != 0xff && data_old[offset + i] != data[i]) {
 			erased = false;
 			break;
@@ -164,16 +173,16 @@ bool flash_helper_write_code(int ind, uint32_t offset, uint8_t *data, uint32_t l
 
 	if (!erased) {
 		uint32_t sector_start = (offset / part->erase_size) * part->erase_size;
-		uint32_t buf_len = offset - sector_start + len + save_after;
-
-		if (buf_len > part->erase_size) {
-			buf_len = part->erase_size;
-		}
+		uint32_t sector_offset = offset - sector_start;
 
 		// Trying to write to two sectors, not supported!
-		if (((offset - sector_start) + len) > buf_len) {
+		if (len > part->erase_size - sector_offset || part->erase_size > part->size - sector_start) {
 			return false;
 		}
+
+		uint32_t buf_len = sector_offset + len;
+		uint32_t remaining = part->erase_size - buf_len;
+		buf_len += save_after < remaining ? save_after : remaining;
 
 		uint8_t *buf = calloc(buf_len, 1);
 		if (!buf) {
@@ -184,8 +193,11 @@ bool flash_helper_write_code(int ind, uint32_t offset, uint8_t *data, uint32_t l
 		memcpy(buf + (offset - sector_start), data, len);
 
 		bool erase_ok = esp_partition_erase_range(part, sector_start, part->erase_size) == ESP_OK;
-		bool write_ok = esp_partition_write(part, sector_start, buf, buf_len) == ESP_OK;
+		bool write_ok = erase_ok && esp_partition_write(part, sector_start, buf, buf_len) == ESP_OK;
 		free(buf);
+		if (!erase_ok) {
+			return false;
+		}
 
 		if (m_stats.sector_last != sector_start) {
 			m_stats.sector_last = sector_start;
@@ -206,25 +218,22 @@ bool flash_helper_write_code(int ind, uint32_t offset, uint8_t *data, uint32_t l
 }
 
 bool flash_helper_code_data(int ind, uint32_t offset, uint8_t *data, uint32_t len) {
-	code_check(ind);
-
-	if (!m_code_checks[ind].ok) {
+	if (!code_check(ind)) {
 		return false;
 	}
 
 	const esp_partition_t *part = get_partition(ind);
 
-	if (!part) {
-		return 0;
+	if (!part || offset > m_code_checks[ind].size || len > m_code_checks[ind].size - offset
+			|| (len && !data)) {
+		return false;
 	}
 
-	return esp_partition_read(part, offset + 8, data, len) == ESP_OK;
+	return !len || esp_partition_read(part, offset + 8, data, len) == ESP_OK;
 }
 
 const uint8_t *flash_helper_code_data_ptr(int ind) {
-	code_check(ind);
-
-	if (!m_code_checks[ind].ok) {
+	if (!code_check(ind)) {
 		return NULL;
 	}
 
@@ -232,7 +241,9 @@ const uint8_t *flash_helper_code_data_ptr(int ind) {
 }
 
 uint8_t* flash_helper_code_data_raw(int ind) {
-	perform_mmap(ind);
+	if (!perform_mmap(ind)) {
+		return NULL;
+	}
 	return (uint8_t*)m_code_checks[ind].addr;
 }
 
@@ -247,13 +258,11 @@ int flash_helper_code_size_raw(int ind) {
 }
 
 uint32_t flash_helper_code_size(int ind) {
-	code_check(ind);
-	return m_code_checks[ind].size;
+	return code_check(ind) ? m_code_checks[ind].size : 0;
 }
 
 uint16_t flash_helper_code_flags(int ind) {
-	code_check(ind);
-	return m_code_checks[ind].flags;
+	return code_check(ind) ? m_code_checks[ind].flags : 0;
 }
 
 flast_stats flash_helper_stats(void) {
@@ -262,7 +271,7 @@ flast_stats flash_helper_stats(void) {
 
 // Stores count variables from base_addr in one NVS transaction. Pass count 1 to store a single value.
 bool store_eeprom_var(eeprom_var *v, int base_addr, int count) {
-	if (base_addr < 0 || count < 0 || base_addr + count > EEPROM_VARS) {
+	if (base_addr < 0 || base_addr > EEPROM_VARS || count < 0 || count > EEPROM_VARS - base_addr) {
 		return false;
 	}
 
@@ -291,7 +300,7 @@ bool store_eeprom_var(eeprom_var *v, int base_addr, int count) {
 
 // Reads count variables from base_addr in one NVS transaction. Fails as a whole if any of them is missing.
 bool read_eeprom_var(eeprom_var *v, int base_addr, int count) {
-	if (base_addr < 0 || count < 0 || base_addr + count > EEPROM_VARS) {
+	if (base_addr < 0 || base_addr > EEPROM_VARS || count < 0 || count > EEPROM_VARS - base_addr) {
 		return false;
 	}
 
@@ -316,7 +325,7 @@ bool read_eeprom_var(eeprom_var *v, int base_addr, int count) {
 
 // Erases count variables from base_addr in one NVS transaction. Erasing a key that was never stored is not an error.
 bool erase_eeprom_var(int base_addr, int count) {
-	if (base_addr < 0 || count < 0 || base_addr + count > EEPROM_VARS) {
+	if (base_addr < 0 || base_addr > EEPROM_VARS || count < 0 || count > EEPROM_VARS - base_addr) {
 		return false;
 	}
 

@@ -56,6 +56,7 @@
 #include "bms.h"
 #include "ble/custom_ble.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
 
@@ -78,20 +79,35 @@ void app_main(void) {
 
 	esp_err_t ret = nvs_flash_init();
 	if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-		nvs_flash_erase();
-		ret = nvs_flash_init();
+		ret = nvs_flash_erase();
+		if (ret == ESP_OK) {
+			ret = nvs_flash_init();
+		}
+	}
+
+	if (ret != ESP_OK) {
+		printf("NVS init failed: %s\n", esp_err_to_name(ret));
 	}
 
 	{
-		nvs_handle_t my_handle;
-		nvs_open("vesc", NVS_READONLY, &my_handle);
-		size_t required_size = 0;
-		nvs_get_blob(my_handle, "backup", NULL, &required_size);
-
 		memset((void*)&backup, 0, sizeof(backup));
-
-		if (required_size == sizeof(backup_data)) {
-			nvs_get_blob(my_handle, "backup", (void*)&backup, &required_size);
+		nvs_handle_t my_handle;
+		if (ret == ESP_OK) {
+			ret = nvs_open("vesc", NVS_READONLY, &my_handle);
+			if (ret == ESP_OK) {
+				size_t required_size = 0;
+				ret = nvs_get_blob(my_handle, "backup", NULL, &required_size);
+				if (ret == ESP_OK && required_size == sizeof(backup_data)) {
+					ret = nvs_get_blob(my_handle, "backup", (void*)&backup, &required_size);
+					if (ret != ESP_OK || required_size != sizeof(backup_data)) {
+						memset((void*)&backup, 0, sizeof(backup));
+					}
+				}
+				nvs_close(my_handle);
+			}
+			if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) {
+				printf("NVS backup read failed: %s\n", esp_err_to_name(ret));
+			}
 		}
 
 		if (backup.controller_id_init_flag != VAR_INIT_CODE) {
@@ -119,8 +135,6 @@ void app_main(void) {
 			backup.config.controller_id = backup.controller_id;
 			backup.config.can_baud_rate = backup.can_baud_rate;
 		}
-
-		nvs_close(my_handle);
 	}
 
 	adc_init();
@@ -226,14 +240,22 @@ uint32_t main_calc_hw_crc(void) {
 	return crc;
 }
 
-void main_store_backup_data(void) {
+bool main_store_backup_data(void) {
 	nvs_handle_t my_handle;
 	backup.controller_id = backup.config.controller_id;
 	backup.can_baud_rate = backup.config.can_baud_rate;
-	nvs_open("vesc", NVS_READWRITE, &my_handle);
-	nvs_set_blob(my_handle, "backup", (void*)&backup, sizeof(backup_data));
-	nvs_commit(my_handle);
-	nvs_close(my_handle);
+	esp_err_t ret = nvs_open("vesc", NVS_READWRITE, &my_handle);
+	if (ret == ESP_OK) {
+		ret = nvs_set_blob(my_handle, "backup", (void*)&backup, sizeof(backup_data));
+		if (ret == ESP_OK) {
+			ret = nvs_commit(my_handle);
+		}
+		nvs_close(my_handle);
+	}
+	if (ret != ESP_OK) {
+		commands_printf("NVS backup write failed: %s", esp_err_to_name(ret));
+	}
+	return ret == ESP_OK;
 }
 
 bool main_init_done(void) {

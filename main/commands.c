@@ -454,12 +454,12 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 				comm_can_update_baudrate(0);
 			}
 
-			main_store_backup_data();
-
-			int32_t ind = 0;
-			uint8_t send_buffer[50];
-			send_buffer[ind++] = packet_id;
-			reply_func(send_buffer, ind);
+			if (main_store_backup_data()) {
+				int32_t ind = 0;
+				uint8_t send_buffer[50];
+				send_buffer[ind++] = packet_id;
+				reply_func(send_buffer, ind);
+			}
 		} else {
 			commands_printf("Warning: Could not set configuration");
 		}
@@ -835,6 +835,10 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 	case COMM_LISP_READ_CODE: {
 		int32_t ind = 0;
 
+		if (len < 8) {
+			break;
+		}
+
 		int32_t len_qml = buffer_get_int32(data, &ind);
 		int32_t ofs_qml = buffer_get_int32(data, &ind);
 
@@ -855,7 +859,8 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 			break;
 		}
 
-		if ((len_qml + ofs_qml) > qmlui_len || len_qml > (PACKET_MAX_PL_LEN - 10)) {
+		if (ofs_qml < 0 || ofs_qml > qmlui_len || len_qml < 0
+				|| len_qml > qmlui_len - ofs_qml || len_qml > (PACKET_MAX_PL_LEN - 10)) {
 			break;
 		}
 
@@ -864,7 +869,10 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		send_buffer_global[ind++] = packet_id;
 		buffer_append_int32(send_buffer_global, qmlui_len, &ind);
 		buffer_append_int32(send_buffer_global, ofs_qml, &ind);
-		flash_helper_code_data(code_type, ofs_qml, send_buffer_global + ind, len_qml);
+		if (!flash_helper_code_data(code_type, ofs_qml, send_buffer_global + ind, len_qml)) {
+			mempools_free_packet_buffer(send_buffer_global);
+			break;
+		}
 		ind += len_qml;
 		reply_func(send_buffer_global, ind);
 		mempools_free_packet_buffer(send_buffer_global);
@@ -897,6 +905,10 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 	case COMM_QMLUI_WRITE:
 	case COMM_LISP_WRITE_CODE: {
 		int32_t ind = 0;
+		if (len < 4) {
+			break;
+		}
+
 		uint32_t qmlui_offset = buffer_get_uint32(data, &ind);
 
 		bool flash_res = flash_helper_write_code(packet_id == COMM_QMLUI_WRITE ? CODE_IND_QML : CODE_IND_LISP,

@@ -821,8 +821,7 @@ static lbm_value ext_conf_set(lbm_value *args, lbm_uint argn) {
 
 static lbm_value ext_conf_store(lbm_value *args, lbm_uint argn) {
 	(void)args; (void)argn;
-	main_store_backup_data();
-	return ENC_SYM_TRUE;
+	return main_store_backup_data() ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
 static lbm_value ext_reboot(lbm_value *args, lbm_uint argn) {
@@ -6288,8 +6287,10 @@ static lbm_value ext_nvs_qml_init(lbm_value *args, lbm_uint argn) {
 
 	esp_err_t ret = nvs_flash_init_partition("qml");
 	if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-		nvs_flash_erase_partition("qml");
-		ret = nvs_flash_init_partition("qml");
+		ret = nvs_flash_erase_partition("qml");
+		if (ret == ESP_OK) {
+			ret = nvs_flash_init_partition("qml");
+		}
 	}
 
 	return ret == ESP_OK ? ENC_SYM_TRUE : ENC_SYM_EERROR;
@@ -6319,8 +6320,12 @@ static lbm_value nvs_read(char *partition, char *namespace, char *key) {
 	lbm_value res;
 	if (lbm_create_array(&res, required_size)) {
 		lbm_array_header_t *arr = (lbm_array_header_t*)lbm_car(res);
-		nvs_get_blob(my_handle, key, arr->data, &required_size);
+		ret = nvs_get_blob(my_handle, key, arr->data, &required_size);
 		nvs_close(my_handle);
+		if (ret != ESP_OK || required_size != arr->size) {
+			lbm_set_error_reason("Could not read data");
+			return ENC_SYM_EERROR;
+		}
 		return res;
 	} else {
 		nvs_close(my_handle);
