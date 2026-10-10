@@ -5357,7 +5357,7 @@ static lbm_value ext_uart_start(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_EERROR;
 	}
 
-	if (uart_num >= UART_NUM_MAX) {
+	if (uart_num < 0 || uart_num >= UART_NUM_MAX) {
 		lbm_set_error_reason("Invalid UART port");
 		return ENC_SYM_EERROR;
 	}
@@ -5584,7 +5584,7 @@ static lbm_value ext_uartcomm_start(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_EERROR;
 	}
 
-	if (uart_num >= UART_NUM_MAX) {
+	if (uart_num < 0 || uart_num >= UART_NUM_MAX) {
 		lbm_set_error_reason("Invalid UART port");
 		return ENC_SYM_EERROR;
 	}
@@ -5607,7 +5607,7 @@ static lbm_value ext_uartcomm_stop(lbm_value *args, lbm_uint argn) {
 
 	int uart_num = lbm_dec_as_i32(args[0]);
 
-	if (uart_num >= UART_NUM_MAX) {
+	if (uart_num < 0 || uart_num >= UART_NUM_MAX) {
 		lbm_set_error_reason("Invalid UART port");
 		return ENC_SYM_EERROR;
 	}

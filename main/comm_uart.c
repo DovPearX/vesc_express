@@ -22,23 +22,74 @@
 #include "comm_uart.h"
 #include "packet.h"
 #include "driver/uart.h"
+#include "freertos/semphr.h"
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct {
 	int uart_num;
 	PACKET_STATE_t packet_state;
-	volatile bool should_stop;
-	volatile bool is_running;
+	bool should_stop;
+	bool is_running;
 } uart_state;
 
 static uart_state *m_state[UART_NUM_MAX] = {0};
+static StaticSemaphore_t m_init_mutex_buffer;
+static StaticSemaphore_t m_send_mutex_buffer;
+static SemaphoreHandle_t m_init_mutex;
+static SemaphoreHandle_t m_send_mutex;
+static portMUX_TYPE m_mutex_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static void init_mutexes(void) {
+	taskENTER_CRITICAL(&m_mutex_lock);
+	if (!m_init_mutex) {
+		m_init_mutex = xSemaphoreCreateMutexStatic(&m_init_mutex_buffer);
+		m_send_mutex = xSemaphoreCreateMutexStatic(&m_send_mutex_buffer);
+	}
+	taskEXIT_CRITICAL(&m_mutex_lock);
+}
+
+static void stop_uart(int uart_num) {
+	xSemaphoreTake(m_send_mutex, portMAX_DELAY);
+	uart_state *state = m_state[uart_num];
+	if (state) {
+		m_state[uart_num] = NULL;
+		taskENTER_CRITICAL(&m_mutex_lock);
+		state->should_stop = true;
+		taskEXIT_CRITICAL(&m_mutex_lock);
+	}
+	xSemaphoreGive(m_send_mutex);
+
+	if (state) {
+		for (;;) {
+			taskENTER_CRITICAL(&m_mutex_lock);
+			bool running = state->is_running;
+			taskEXIT_CRITICAL(&m_mutex_lock);
+			if (!running) {
+				break;
+			}
+			vTaskDelay(1);
+		}
+
+		free(state);
+	}
+
+	if (uart_is_driver_installed(uart_num)) {
+		uart_driver_delete(uart_num);
+	}
+}
 
 static void rx_task(void *arg) {
-	uart_state *state = (uart_state*)arg;
+	uart_state *state = (uart_state *)arg;
 
-	state->is_running = true;
+	for (;;) {
+		taskENTER_CRITICAL(&m_mutex_lock);
+		bool stop = state->should_stop;
+		taskEXIT_CRITICAL(&m_mutex_lock);
+		if (stop) {
+			break;
+		}
 
-	while (!state->should_stop) {
 		uint8_t buf[64];
 		int bytes = uart_read_bytes(state->uart_num, buf, 1, 3);
 		if (bytes == 1) {
@@ -47,23 +98,25 @@ static void rx_task(void *arg) {
 				bytes += pending;
 			}
 		}
-		for (int i = 0;i < bytes;i++) {
+		for (int i = 0; i < bytes; i++) {
 			packet_process_byte(buf[i], &(state->packet_state));
 		}
 
-		// Check if this uart has been stopped externally
 		if (!uart_is_driver_installed(state->uart_num)) {
-			m_state[state->uart_num] = NULL;
-			free(state);
-			state = NULL;
 			break;
 		}
 	}
 
-	if (state) {
+	xSemaphoreTake(m_send_mutex, portMAX_DELAY);
+	if (m_state[state->uart_num] == state) {
+		m_state[state->uart_num] = NULL;
+		free(state);
+	} else {
+		taskENTER_CRITICAL(&m_mutex_lock);
 		state->is_running = false;
+		taskEXIT_CRITICAL(&m_mutex_lock);
 	}
-
+	xSemaphoreGive(m_send_mutex);
 	vTaskDelete(NULL);
 }
 
@@ -92,32 +145,42 @@ static void send_packet_raw_u1(unsigned char *buffer, unsigned int len) {
 }
 
 bool comm_uart_init(int pin_tx, int pin_rx, int uart_num, int baudrate) {
-	if (uart_num >= 0 && uart_num >= UART_NUM_MAX) {
+	if (uart_num < 0 || uart_num >= UART_NUM_MAX) {
 		return false;
 	}
 
-	comm_uart_stop(uart_num);
+	init_mutexes();
+	xSemaphoreTake(m_init_mutex, portMAX_DELAY);
+	stop_uart(uart_num);
 
 	uart_state *state;
 	state = malloc(sizeof(uart_state));
 	if (!state) {
+		xSemaphoreGive(m_init_mutex);
 		return false;
 	}
 	memset(state, 0, sizeof(uart_state));
 	state->uart_num = uart_num;
+	state->is_running = true;
 
 	uart_config_t uart_config = {
-			.baud_rate = baudrate,
-			.data_bits = UART_DATA_8_BITS,
-			.parity    = UART_PARITY_DISABLE,
-			.stop_bits = UART_STOP_BITS_1,
-			.flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-			.source_clk = UART_SCLK_DEFAULT,
+		.baud_rate = baudrate,
+		.data_bits = UART_DATA_8_BITS,
+		.parity = UART_PARITY_DISABLE,
+		.stop_bits = UART_STOP_BITS_1,
+		.flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+		.source_clk = UART_SCLK_DEFAULT,
 	};
 
-	uart_driver_install(uart_num, 512, 512, 0, 0, 0);
-	uart_param_config(uart_num, &uart_config);
-	uart_set_pin(uart_num, pin_tx, pin_rx, -1, -1);
+	if (uart_driver_install(uart_num, 512, 512, 0, 0, 0) != ESP_OK) {
+		free(state);
+		xSemaphoreGive(m_init_mutex);
+		return false;
+	}
+	if (uart_param_config(uart_num, &uart_config) != ESP_OK
+		|| uart_set_pin(uart_num, pin_tx, pin_rx, -1, -1) != ESP_OK) {
+		goto error;
+	}
 
 	if (uart_num == 0) {
 		packet_init(send_packet_raw_u0, process_packet_u0, &(state->packet_state));
@@ -125,39 +188,47 @@ bool comm_uart_init(int pin_tx, int pin_rx, int uart_num, int baudrate) {
 		packet_init(send_packet_raw_u1, process_packet_u1, &(state->packet_state));
 	}
 
-	xTaskCreatePinnedToCore(rx_task, "uart_rx", 3072, state, 8, NULL, tskNO_AFFINITY);
+	xSemaphoreTake(m_send_mutex, portMAX_DELAY);
 	m_state[uart_num] = state;
+	BaseType_t res = xTaskCreatePinnedToCore(rx_task, "uart_rx", 3072, state, 8, NULL, tskNO_AFFINITY);
+	if (res != pdPASS) {
+		m_state[uart_num] = NULL;
+	}
+	xSemaphoreGive(m_send_mutex);
+	if (res != pdPASS) {
+		goto error;
+	}
 
+	xSemaphoreGive(m_init_mutex);
 	return true;
+
+error:
+	uart_driver_delete(uart_num);
+	free(state);
+	xSemaphoreGive(m_init_mutex);
+	return false;
 }
 
 void comm_uart_stop(int uart_num) {
-	if (uart_num >= 0 && uart_num >= UART_NUM_MAX) {
+	if (uart_num < 0 || uart_num >= UART_NUM_MAX) {
 		return;
 	}
 
-	uart_state *state = m_state[uart_num];
-	if (state) {
-		m_state[uart_num] = NULL;
-
-		state->should_stop = true;
-		while (state->is_running) {
-			vTaskDelay(1);
-		}
-
-		vTaskDelay(1);
-		free(state);
-	}
-
-	if (uart_is_driver_installed(uart_num)) {
-		uart_driver_delete(uart_num);
-	}
+	init_mutexes();
+	xSemaphoreTake(m_init_mutex, portMAX_DELAY);
+	stop_uart(uart_num);
+	xSemaphoreGive(m_init_mutex);
 }
 
 void comm_uart_send_packet(unsigned char *data, unsigned int len, int uart_num) {
-	if (uart_num < 0 || uart_num >= UART_NUM_MAX || m_state[uart_num] == NULL) {
+	if (uart_num < 0 || uart_num >= UART_NUM_MAX) {
 		return;
 	}
 
-	packet_send_packet(data, len, &(m_state[uart_num]->packet_state));
+	init_mutexes();
+	xSemaphoreTake(m_send_mutex, portMAX_DELAY);
+	if (m_state[uart_num]) {
+		packet_send_packet(data, len, &(m_state[uart_num]->packet_state));
+	}
+	xSemaphoreGive(m_send_mutex);
 }
