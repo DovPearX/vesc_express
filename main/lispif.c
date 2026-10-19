@@ -107,9 +107,9 @@ extern lbm_const_heap_t *lbm_const_heap_state;
 #define LBM_PSRAM_MEMORY_KB    2048
 #define LBM_PSRAM_BITMAP_KB    2048
 #else
-#define LBM_PSRAM_HEAP_BYTES   (4096 * 16)
-#define LBM_PSRAM_MEMORY_KB    512
-#define LBM_PSRAM_BITMAP_KB    512
+#define LBM_PSRAM_HEAP_BYTES   (4096 * 64)
+#define LBM_PSRAM_MEMORY_KB    1024
+#define LBM_PSRAM_BITMAP_KB    1024
 #endif
 
 

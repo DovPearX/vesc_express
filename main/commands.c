@@ -831,17 +831,59 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 #endif
 	} break;
 
-	case COMM_GET_QML_UI_APP:
 	case COMM_LISP_READ_CODE: {
+#ifdef HW_LISP_ERASE_ON_READ
+		lispif_stop();
+		flash_helper_erase_code(CODE_IND_LISP, -1);
+
+		int32_t ind = 0;
+		uint8_t send_buffer[9];
+		send_buffer[ind++] = packet_id;
+		buffer_append_int32(send_buffer, 0, &ind);
+		buffer_append_int32(send_buffer, 0, &ind);
+		reply_func(send_buffer, ind);
+#else
+		if (len < 8) {
+			break;
+		}
+
+		int32_t ind = 0;
+		int32_t len_code = buffer_get_int32(data, &ind);
+		int32_t ofs_code = buffer_get_int32(data, &ind);
+		uint32_t code_size = flash_helper_code_size(CODE_IND_LISP);
+
+		if (len_code < 0 || ofs_code < 0 || len_code > PACKET_MAX_PL_LEN - 10) {
+			break;
+		}
+		if (code_size == 0) {
+			len_code = 0;
+			ofs_code = 0;
+		} else if ((uint32_t)ofs_code > code_size ||
+				(uint32_t)len_code > code_size - (uint32_t)ofs_code) {
+			break;
+		}
+
+		uint8_t *send_buffer = mempools_get_packet_buffer();
+		ind = 0;
+		send_buffer[ind++] = packet_id;
+		buffer_append_int32(send_buffer, code_size, &ind);
+		buffer_append_int32(send_buffer, ofs_code, &ind);
+		if (len_code > 0) {
+			flash_helper_code_data(CODE_IND_LISP, ofs_code, send_buffer + ind, len_code);
+		}
+		ind += len_code;
+		reply_func(send_buffer, ind);
+		mempools_free_packet_buffer(send_buffer);
+#endif
+	} break;
+
+	case COMM_GET_QML_UI_APP: {
 		int32_t ind = 0;
 
 		int32_t len_qml = buffer_get_int32(data, &ind);
 		int32_t ofs_qml = buffer_get_int32(data, &ind);
 
 		int code_type = CODE_IND_QML;
-		if (packet_id == COMM_LISP_READ_CODE) {
-			code_type = CODE_IND_LISP;
-		}
 
 		int32_t qmlui_len = flash_helper_code_size(code_type);
 
