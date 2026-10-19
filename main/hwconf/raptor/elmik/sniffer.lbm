@@ -1,0 +1,22 @@
+; CAN_BAUD: 2 = 500 kbit/s, 1 = 250, 0 = 125.
+(def CAN_BAUD 2)
+(can-stop)
+(conf-set 'can-baud-rate CAN_BAUD)
+(conf-set 'can-status-rate-hz 0)
+(can-use-vesc nil)
+
+(def started (systime))
+(defun handler ()
+    (loopwhile t
+        (recv
+            ((event-can-sid . ((? id) . (? data)))(print (list (secs-since started) 'sid id data)))
+            ((event-can-eid . ((? id) . (? data)))(print (list (secs-since started) 'eid id data)))
+            (_ nil)
+        )
+    )
+)
+
+(event-register-handler (spawn handler))
+(event-enable 'event-can-sid)
+(event-enable 'event-can-eid)
+;(can-start 20 21)

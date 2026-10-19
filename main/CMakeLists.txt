@@ -134,6 +134,9 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "hwconf/vesc/vbms_inf_sat"
 "hwconf/vesc/vbms_inf_mas"
 "hwconf/seeed"
+"hwconf/raptor/rabr"
+"hwconf/raptor/rads"
+"hwconf/raptor/elmik"
 
 "lispBM"
 "lispBM/include"

@@ -103,13 +103,13 @@ extern lbm_const_heap_t *lbm_const_heap_state;
 #define LBM_BITMAP_SIZE_KB(kb) LBM_MEMORY_BITMAP_SIZE((kb * 16))
 
 #ifdef CONFIG_IDF_TARGET_ESP32P4
-#define LBM_PSRAM_HEAP_BYTES   (4096 * 32)
+#define LBM_PSRAM_HEAP_BYTES   (4096 * 64)
 #define LBM_PSRAM_MEMORY_KB    2048
 #define LBM_PSRAM_BITMAP_KB    2048
 #else
-#define LBM_PSRAM_HEAP_BYTES   (4096 * 16)
-#define LBM_PSRAM_MEMORY_KB    512
-#define LBM_PSRAM_BITMAP_KB    512
+#define LBM_PSRAM_HEAP_BYTES   (4096 * 64)
+#define LBM_PSRAM_MEMORY_KB    1024
+#define LBM_PSRAM_BITMAP_KB    1024
 #endif
 
 

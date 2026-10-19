@@ -6338,8 +6338,12 @@ static lbm_value nvs_read(char *partition, char *namespace, char *key) {
 
 	nvs_handle_t my_handle;
 	esp_err_t ret = nvs_open_from_partition(partition, namespace, NVS_READONLY, &my_handle);
+
+	if (ret == ESP_ERR_NVS_NOT_FOUND) {
+		return ENC_SYM_NIL;
+	}
 	if (ret != ESP_OK) {
-		lbm_set_error_reason("Could not open partition");
+		lbm_set_error_reason((char*)esp_err_to_name(ret));
 		return ENC_SYM_EERROR;
 	}
 
