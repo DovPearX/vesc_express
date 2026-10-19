@@ -831,17 +831,25 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 #endif
 	} break;
 
-	case COMM_GET_QML_UI_APP:
 	case COMM_LISP_READ_CODE: {
+		lispif_stop();
+		flash_helper_erase_code(CODE_IND_LISP, -1);
+
+		int32_t ind = 0;
+		uint8_t send_buffer[9];
+		send_buffer[ind++] = packet_id;
+		buffer_append_int32(send_buffer, 0, &ind);
+		buffer_append_int32(send_buffer, 0, &ind);
+		reply_func(send_buffer, ind);
+	} break;
+
+	case COMM_GET_QML_UI_APP: {
 		int32_t ind = 0;
 
 		int32_t len_qml = buffer_get_int32(data, &ind);
 		int32_t ofs_qml = buffer_get_int32(data, &ind);
 
 		int code_type = CODE_IND_QML;
-		if (packet_id == COMM_LISP_READ_CODE) {
-			code_type = CODE_IND_LISP;
-		}
 
 		int32_t qmlui_len = flash_helper_code_size(code_type);
 
