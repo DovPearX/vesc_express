@@ -70,6 +70,33 @@ typedef struct {
   uint8_t alpha;
 } color_t;
 
+#define TINYGFX_SCENE_DIRTY_MAX 16
+typedef struct {
+  int32_t x;
+  int32_t y;
+  int32_t w;
+  int32_t h;
+} tinygfx_rect_t;
+typedef struct {
+  uint16_t width;
+  uint16_t height;
+  uint8_t dirty_count;
+  tinygfx_rect_t dirty[TINYGFX_SCENE_DIRTY_MAX];
+} tinygfx_scene_t;
+typedef bool (*tinygfx_scene_tile_fn)(image_buffer_t *tile, int x, int y, void *ctx);
+
+typedef struct {
+  const uint8_t *data;
+  size_t size;
+  size_t glyphs;
+  size_t glyph_end;
+  size_t kern;
+  size_t kern_end;
+  uint32_t count;
+  color_format_t fmt;
+} tinygfx_prepared_font_t;
+typedef bool (*tinygfx_glyph_fn)(image_buffer_t *glyph, int x, int y, void *ctx);
+
 ////////////////////////////////////////////////////////////
 //  COLOR / PIXEL FORMAT
 
@@ -249,6 +276,13 @@ size_t tinygfx_jpg_input(JDEC *jd, uint8_t *buff, size_t ndata);
 
 bool tinygfx_decode_jpg(image_buffer_t *dest, const uint8_t *jpg_data, size_t jpg_size,
                          int ofs_x, int ofs_y, void *work_buf, size_t work_buf_size);
+
+bool tinygfx_scene_init(tinygfx_scene_t *scene, uint16_t width, uint16_t height);
+void tinygfx_scene_invalidate(tinygfx_scene_t *scene, tinygfx_rect_t rect);
+bool tinygfx_scene_render(tinygfx_scene_t *scene, image_buffer_t *scratch, tinygfx_scene_tile_fn paint, tinygfx_scene_tile_fn flush, void *ctx);
+
+bool tinygfx_prepared_font_init(tinygfx_prepared_font_t *font, const uint8_t *data, size_t size);
+bool tinygfx_prepared_text(tinygfx_prepared_font_t *font, const char *text, tinygfx_glyph_fn glyph, void *ctx);
 
 #ifdef __cplusplus
 }

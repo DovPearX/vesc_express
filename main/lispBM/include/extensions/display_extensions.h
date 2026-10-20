@@ -68,15 +68,11 @@ static inline void image_buffer_set_format(uint8_t *data, color_format_t fmt) {
 }
 
 static inline uint32_t image_buffer_size_bytes(uint8_t *data) {
-  return (((uint32_t)image_buffer_width(data) *
-           (uint32_t)image_buffer_height(data) *
-           (uint32_t)image_buffer_format(data)) / 8);
+  return image_dims_to_size_bytes((color_format_t)image_buffer_format(data), image_buffer_width(data), image_buffer_height(data));
 }
 
 static inline bool image_buffer_is_valid(uint8_t *data, lbm_uint size) {
-  return
-    (size > IMAGE_BUFFER_HEADER_SIZE) &&
-    (size >= (IMAGE_BUFFER_HEADER_SIZE + image_buffer_size_bytes(data)));
+  return (size > IMAGE_BUFFER_HEADER_SIZE) && (image_buffer_size_bytes(data) > 0) && (size >= (IMAGE_BUFFER_HEADER_SIZE + image_buffer_size_bytes(data)));
 }
 
 static inline bool array_is_image_buffer(lbm_value v) {

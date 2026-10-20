@@ -106,9 +106,11 @@ uint32_t image_dims_to_size_bytes(color_format_t fmt, uint16_t width, uint16_t h
     return num_pix;
     break;
   case rgb565:
+    if (num_pix > UINT32_MAX / 2) return 0;
     return num_pix * 2;
     break;
   case rgb888:
+    if (num_pix > UINT32_MAX / 3) return 0;
     return num_pix * 3;
   default:
     return 0;
@@ -2034,4 +2036,281 @@ bool tinygfx_decode_jpg(image_buffer_t *dest, const uint8_t *jpg_data, size_t jp
     return false;
   }
   return jd_decomp(&jd, tinygfx_jpg_output, 0) == JDR_OK;
+}
+
+
+static uint32_t prepared_font_read_u32(const uint8_t *p) {
+  return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+static float prepared_font_read_float(const uint8_t *p) {
+  uint32_t bits = prepared_font_read_u32(p);
+  float value;
+  memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+bool tinygfx_prepared_font_init(tinygfx_prepared_font_t *font, const uint8_t *data, size_t size) {
+  if (!font || !data || size < 9 || memcmp(data, "\0\0\0\0font\0", 9)) {
+    return false;
+  }
+
+  memset(font, 0, sizeof(*font));
+  font->data = data;
+  font->size = size;
+  size_t i = 9;
+
+  while (i < size) {
+    if (size - i == 1 && data[i] == 0) {
+      break;
+    }
+
+    const uint8_t *end = memchr(data + i, 0, size - i);
+
+    if (!end) {
+      return false;
+    }
+
+    size_t name_len = (size_t)(end - (data + i));
+    size_t payload = (size_t)(end - data) + 5;
+
+    if (payload > size) {
+      return false;
+    }
+
+    uint32_t length = prepared_font_read_u32(end + 1);
+
+    if (length > size - payload) {
+      return false;
+    }
+
+    if (name_len == 6 && !memcmp(data + i, "glyphs", 6)) {
+      if (length < 8) {
+        return false;
+      }
+
+      font->count = prepared_font_read_u32(data + payload);
+      font->fmt = (color_format_t)prepared_font_read_u32(data + payload + 4);
+
+      if (font->fmt != indexed2 && font->fmt != indexed4 && font->fmt != indexed16) {
+        return false;
+      }
+
+      font->glyphs = payload + 8;
+      font->glyph_end = payload + length;
+
+      if (font->count > (font->glyph_end - font->glyphs) / 24) {
+        return false;
+      }
+
+    } else if (name_len == 4 && !memcmp(data + i, "kern", 4)) {
+      if (length < 4) {
+        return false;
+      }
+
+      font->kern = payload;
+      font->kern_end = payload + length;
+    }
+    i = payload + length;
+  }
+  return font->glyphs && font->kern;
+}
+
+static bool prepared_font_get_kerning(tinygfx_prepared_font_t *font, uint32_t left, uint32_t right, float *kern_x, float *kern_y) {
+  size_t i = font->kern;
+  uint32_t rows = prepared_font_read_u32(font->data + i);
+  i += 4;
+
+  if (rows > (font->kern_end - i) / 8) {
+    return false;
+  }
+
+  for (uint32_t r = 0; r < rows; r++) {
+    if (font->kern_end - i < 8) {
+      return false;
+    }
+
+    uint32_t code = prepared_font_read_u32(font->data + i),
+             count = prepared_font_read_u32(font->data + i + 4);
+    i += 8;
+
+    if (count > (font->kern_end - i) / 12) {
+      return false;
+    }
+
+    if (code == left) {
+      for (uint32_t c = 0; c < count; c++, i += 12) {
+        if (prepared_font_read_u32(font->data + i) == right) {
+          *kern_x = prepared_font_read_float(font->data + i + 4);
+          *kern_y = prepared_font_read_float(font->data + i + 8);
+          return isfinite(*kern_x) && isfinite(*kern_y) && fabsf(*kern_x) < 32000 &&
+            fabsf(*kern_y) < 32000;
+        }
+      }
+      return true;
+    }
+    i += count * 12;
+  }
+  return true;
+}
+
+bool tinygfx_prepared_text(tinygfx_prepared_font_t *font, const char *text, tinygfx_glyph_fn draw, void *context) {
+  if (!font || !text) {
+    return false;
+  }
+
+  float x = 0;
+  uint32_t previous = 0;
+
+  for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+    if (*p < 32 || *p > 126) {
+      return false;
+    }
+
+    size_t i = font->glyphs;
+    bool found = false;
+
+    for (uint32_t n = 0; n < font->count; n++) {
+      if (font->glyph_end - i < 24) {
+        return false;
+      }
+
+      const uint8_t *g = font->data + i;
+      uint32_t w = prepared_font_read_u32(g + 16), h = prepared_font_read_u32(g + 20);
+
+      if (w > 32000 || h > 32000) {
+        return false;
+      }
+
+      uint32_t bytes = image_dims_to_size_bytes(font->fmt, (uint16_t)w, (uint16_t)h);
+
+      if (bytes > font->glyph_end - i - 24) {
+        return false;
+      }
+
+      if (prepared_font_read_u32(g) == *p) {
+        float advance = prepared_font_read_float(g + 4), bearing = prepared_font_read_float(g + 8);
+        int32_t offset_y = (int32_t)prepared_font_read_u32(g + 12);
+        float kern_x = 0, kern_y = 0;
+
+        if (!isfinite(advance) || !isfinite(bearing) || fabsf(advance) > 32000 ||
+            fabsf(bearing) > 32000 || offset_y < -32000 || offset_y > 32000 ||
+            (previous && !prepared_font_get_kerning(font, previous, *p, &kern_x, &kern_y))) {
+          return false;
+        }
+
+        float next_x = x + kern_x;
+
+        if (fabsf(next_x + bearing) > 1000000) {
+          return false;
+        }
+
+        image_buffer_t glyph = {font->fmt, (uint16_t)w, (uint16_t)h, (uint8_t *)(g + 24), (uint8_t *)(g + 24)};
+
+        if (draw && !draw(&glyph, (int)(next_x + bearing), (int)(kern_y + offset_y), context)) {
+          return false;
+        }
+
+        x = next_x + advance;
+        previous = *p;
+        found = true;
+        break;
+      }
+      i += 24 + bytes;
+    }
+    if (!found) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool tinygfx_scene_init(tinygfx_scene_t *scene, uint16_t width, uint16_t height) {
+  if (!scene || !width || !height) {
+    return false;
+  }
+
+  memset(scene, 0, sizeof(*scene));
+  scene->width = width;
+  scene->height = height;
+  tinygfx_scene_invalidate(scene, (tinygfx_rect_t){0, 0, width, height});
+  return true;
+}
+
+void tinygfx_scene_invalidate(tinygfx_scene_t *scene, tinygfx_rect_t r) {
+  if (!scene || r.w <= 0 || r.h <= 0) {
+    return;
+  }
+
+  int64_t right = (int64_t)r.x + r.w, bottom = (int64_t)r.y + r.h;
+
+  if (right <= 0 || bottom <= 0 || r.x >= scene->width || r.y >= scene->height) {
+    return;
+  }
+
+  if (r.x < 0) {
+    r.x = 0;
+  }
+
+  if (r.y < 0) {
+    r.y = 0;
+  }
+
+  if (right > scene->width) {
+    right = scene->width;
+  }
+
+  if (bottom > scene->height) {
+    bottom = scene->height;
+  }
+
+  r.w = (int32_t)right - r.x;
+  r.h = (int32_t)bottom - r.y;
+
+  for (unsigned i = 0; i < scene->dirty_count;) {
+    tinygfx_rect_t d = scene->dirty[i];
+    if (r.x <= d.x + d.w && d.x <= r.x + r.w && r.y <= d.y + d.h && d.y <= r.y + r.h) {
+      int32_t x = r.x < d.x ? r.x : d.x;
+      int32_t y = r.y < d.y ? r.y : d.y;
+      int32_t x1 = r.x + r.w > d.x + d.w ? r.x + r.w : d.x + d.w;
+      int32_t y1 = r.y + r.h > d.y + d.h ? r.y + r.h : d.y + d.h;
+      r = (tinygfx_rect_t){x, y, x1 - x, y1 - y};
+      scene->dirty[i] = scene->dirty[--scene->dirty_count];
+      i = 0;
+    } else {
+      i++;
+    }
+  }
+  if (scene->dirty_count == TINYGFX_SCENE_DIRTY_MAX) {
+    scene->dirty_count = 0;
+    r = (tinygfx_rect_t){0, 0, scene->width, scene->height};
+  }
+  scene->dirty[scene->dirty_count++] = r;
+}
+
+bool tinygfx_scene_render(tinygfx_scene_t *scene, image_buffer_t *scratch, tinygfx_scene_tile_fn paint, tinygfx_scene_tile_fn flush, void *ctx) {
+  if (!scene || !scratch || !scratch->data || scratch->fmt != rgb565 || !scratch->width ||
+      !scratch->height || !paint || !flush) {
+    return false;
+  }
+  
+  for (unsigned i = 0; i < scene->dirty_count; i++) {
+    tinygfx_rect_t r = scene->dirty[i];
+    for (int y = r.y; y < r.y + r.h; y += scratch->height) {
+      for (int x = r.x; x < r.x + r.w; x += scratch->width) {
+        image_buffer_t tile = *scratch;
+        if (r.x + r.w - x < tile.width) {
+          tile.width = (uint16_t)(r.x + r.w - x);
+        }
+        if (r.y + r.h - y < tile.height) {
+          tile.height = (uint16_t)(r.y + r.h - y);
+        }
+        if (!paint(&tile, x, y, ctx) || !flush(&tile, x, y, ctx)) {
+          return false;
+        }
+      }
+    }
+  }
+  scene->dirty_count = 0;
+  return true;
 }

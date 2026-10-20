@@ -37,6 +37,75 @@
 #define MAX_WIDTH 32000
 #define MAX_HEIGHT 32000
 
+#define SCENE_MAGIC 0x53434E31u
+#define SCENE_MAX_SLOTS 256
+
+typedef enum {
+  SCENE_RECT,
+  SCENE_CIRCLE,
+  SCENE_IMAGE,
+  SCENE_TEXT,
+  SCENE_TTF,
+  SCENE_ROUNDRECT,
+  SCENE_KIND_COUNT
+} display_scene_kind_t;
+
+typedef struct {
+  uint32_t magic;
+  tinygfx_scene_t scheduler;
+  uint32_t background;
+  uint16_t slots;
+  uint16_t tile_width;
+  uint16_t tile_height;
+} display_scene_t;
+
+typedef struct {
+  display_scene_kind_t kind;
+  tinygfx_rect_t bounds;
+  lbm_value color;
+  lbm_value palette;
+  image_buffer_t image;
+  int32_t transparent;
+  uint8_t alpha;
+  int radius;
+  const uint8_t *font;
+  const char *text;
+  int text_scale;
+  tinygfx_prepared_font_t prepared;
+  int32_t pen_x;
+  int32_t pen_y;
+} display_scene_node_t;
+
+typedef struct {
+  display_scene_t *state;
+  lbm_value slots;
+} display_scene_render_context_t;
+
+typedef struct {
+  image_buffer_t *tile;
+  display_scene_node_t *node;
+  int tx;
+  int ty;
+  int x0;
+  int y0;
+  int x1;
+  int y1;
+  lbm_value palette[16];
+} display_scene_glyph_context_t;
+
+
+static struct {
+  const char *name;
+  lbm_uint symbol;
+} scene_symbols[SCENE_KIND_COUNT] = {
+  {"rect", 0},
+  {"circle", 0},
+  {"image", 0},
+  {"text", 0},
+  {"ttf", 0},
+  {"roundrect", 0},
+};
+
 static lbm_uint symbol_indexed2 = 0;
 static lbm_uint symbol_indexed4 = 0;
 static lbm_uint symbol_indexed16 = 0;
@@ -250,6 +319,9 @@ static color_t *get_color(lbm_value v) {
 
 static bool register_symbols(void) {
   bool res = true;
+  for (unsigned i = 0; i < SCENE_KIND_COUNT; i++) {
+    res = res && lbm_add_symbol_const(scene_symbols[i].name, &scene_symbols[i].symbol);
+  }
   res = res && lbm_add_symbol_const("indexed2", &symbol_indexed2);
   res = res && lbm_add_symbol_const("indexed4", &symbol_indexed4);
   res = res && lbm_add_symbol_const("indexed16", &symbol_indexed16);
@@ -1609,12 +1681,639 @@ static lbm_value ext_img_render_jpg(lbm_value *args, lbm_uint argn) {
   return res;
 }
 
+static bool scene_decode_integer(lbm_value value, int32_t *out, int32_t min, int32_t max) {
+  if (!lbm_is_number(value)) {
+    return false;
+  }
+
+  double number = lbm_dec_as_double(value);
+
+  if (!(number >= min && number <= max)) {
+    return false;
+  }
+
+  *out = (int32_t)number;
+  return number == *out;
+}
+
+static size_t scene_size_bytes(display_scene_t *scene) {
+  return sizeof(*scene) + scene->slots * sizeof(tinygfx_rect_t) +
+    (size_t)scene->tile_width * scene->tile_height * 2;
+}
+
+static display_scene_t *scene_get_state(lbm_value value) {
+  if (!lbm_is_cons(value)) {
+    return NULL;
+  }
+
+  lbm_array_header_t *array = lbm_dec_array_rw(lbm_car(value));
+
+  if (!array || array->size < sizeof(display_scene_t)) {
+    return NULL;
+  }
+
+  display_scene_t *scene = (display_scene_t *)array->data;
+
+  if (scene->magic != SCENE_MAGIC || !scene->slots || scene->slots > SCENE_MAX_SLOTS ||
+      !scene->tile_width || !scene->tile_height || !scene->scheduler.width ||
+      !scene->scheduler.height || scene->scheduler.width > MAX_WIDTH ||
+      scene->scheduler.height > MAX_HEIGHT ||
+      scene->scheduler.dirty_count > TINYGFX_SCENE_DIRTY_MAX ||
+      array->size != scene_size_bytes(scene)) {
+    return NULL;
+  }
+
+  lbm_value tail = lbm_cdr(value);
+
+  for (unsigned i = 0; i < scene->slots; i++) {
+    if (!lbm_is_cons(tail)) {
+      return NULL;
+    }
+    tail = lbm_cdr(tail);
+  }
+
+  if (tail != ENC_SYM_NIL) {
+    return NULL;
+  }
+
+  for (unsigned i = 0; i < scene->scheduler.dirty_count; i++) {
+    tinygfx_rect_t bounds = scene->scheduler.dirty[i];
+    if (bounds.x < 0 || bounds.y < 0 || bounds.w <= 0 || bounds.h <= 0 || (int64_t)bounds.x + bounds.w > scene->scheduler.width ||
+        (int64_t)bounds.y + bounds.h > scene->scheduler.height) {
+      return NULL;
+    }
+  }
+  return scene;
+}
+
+static bool scene_color_is_valid(lbm_value value) {
+  if (lbm_is_number(value)) {
+    return true;
+  }
+
+  color_t *color = get_color(value);
+
+  return color &&
+    (color->type == COLOR_REGULAR ||
+     ((color->type == COLOR_GRADIENT_X || color->type == COLOR_GRADIENT_Y) && color->param1));
+}
+
+static bool scene_palette_is_valid(lbm_value palette, unsigned count) {
+  for (unsigned i = 0; i < count; i++) {
+    if (!lbm_is_cons(palette) || !scene_color_is_valid(lbm_car(palette))) {
+      return false;
+    }
+    palette = lbm_cdr(palette);
+  }
+  return palette == ENC_SYM_NIL;
+}
+
+static bool scene_decode_rect(lbm_value *fields, display_scene_node_t *node) {
+  if (!scene_decode_integer(fields[3], &node->bounds.w, 1, MAX_WIDTH) ||
+      !scene_decode_integer(fields[4], &node->bounds.h, 1, MAX_HEIGHT)) {
+    return false;
+  }
+  unsigned color_index = 5;
+  if (node->kind == SCENE_ROUNDRECT) {
+    int32_t radius;
+    if (!scene_decode_integer(fields[5], &radius, 0, 16000)) {
+      return false;
+    }
+    node->radius = radius;
+    color_index = 6;
+  }
+  if (!scene_color_is_valid(fields[color_index])) {
+    return false;
+  }
+  node->color = fields[color_index];
+  return true;
+}
+
+static bool scene_decode_circle(lbm_value *fields, display_scene_node_t *node) {
+  int32_t radius;
+  if (!scene_decode_integer(fields[3], &radius, 0, MAX_WIDTH / 2) ||
+      !scene_color_is_valid(fields[4])) {
+    return false;
+  }
+  node->radius = radius;
+  node->bounds.x -= radius;
+  node->bounds.y -= radius;
+  node->bounds.w = node->bounds.h = radius * 2 + 1;
+  node->color = fields[4];
+  return true;
+}
+
+static bool scene_decode_ttf(lbm_value *fields, display_scene_node_t *node) {
+  lbm_array_header_t *font = lbm_dec_array_r(fields[7]), *text = lbm_dec_array_r(fields[8]);
+  if (!font || !text || !text->size || text->size > 4096 || !memchr(text->data, 0, text->size) ||
+      !scene_decode_integer(fields[3], &node->bounds.w, 1, MAX_WIDTH) ||
+      !scene_decode_integer(fields[4], &node->bounds.h, 1, MAX_HEIGHT) ||
+      !scene_decode_integer(fields[5], &node->pen_x, -MAX_WIDTH, MAX_WIDTH) ||
+      !scene_decode_integer(fields[6], &node->pen_y, -MAX_HEIGHT, MAX_HEIGHT) ||
+      !tinygfx_prepared_font_init(&node->prepared, (uint8_t *)font->data, font->size)) {
+    return false;
+  }
+  node->text = (const char *)text->data;
+  node->palette = fields[9];
+  if (!scene_palette_is_valid(node->palette, (1u << node->prepared.fmt))) {
+    return false;
+  }
+  return true;
+}
+
+static bool scene_decode_text(lbm_value *fields, display_scene_node_t *node) {
+  int32_t scale, font_id;
+  lbm_array_header_t *text = lbm_dec_array_r(fields[4]);
+  if (!text || !text->size || !scene_color_is_valid(fields[5]) ||
+      !scene_decode_integer(fields[6], &scale, 1, 32)) {
+    return false;
+  }
+  const char *end = memchr(text->data, 0, text->size);
+  if (!end) {
+    return false;
+  }
+  lbm_array_header_t *font = lbm_dec_array_r(fields[3]);
+  if (font) {
+    if (!font_data_is_valid(font)) {
+      return false;
+    }
+    node->font = (const uint8_t *)font->data;
+  } else {
+    if (!scene_decode_integer(fields[3], &font_id, 0, 255) ||
+        !(node->font = tinygfx_get_builtin_font(font_id))) {
+      return false;
+    }
+  }
+  node->text = (const char *)text->data;
+  size_t length = (size_t)(end - node->text);
+  if (length > (size_t)MAX_WIDTH / node->font[0] / (unsigned)scale) {
+    return false;
+  }
+  node->text_scale = scale;
+  node->bounds.w = (int32_t)length * node->font[0] * scale;
+  node->bounds.h = node->font[1] * scale;
+  node->color = fields[5];
+  return true;
+}
+
+static bool scene_decode_image(lbm_value *fields, display_scene_node_t *node) {
+  lbm_array_header_t *array = get_image_buffer(fields[3]);
+  int32_t alpha;
+  if (!array || !scene_decode_integer(fields[4], &node->transparent, -1, 0xFFFFFF) ||
+      !scene_decode_integer(fields[6], &alpha, 0, 255)) {
+    return false;
+  }
+  uint8_t *data = (uint8_t *)array->data;
+  node->image.fmt = image_buffer_format(data);
+  node->image.width = image_buffer_width(data);
+  node->image.height = image_buffer_height(data);
+  node->image.data = image_buffer_data(data);
+  node->image.mem_base = data;
+  if (!node->image.width || !node->image.height || node->image.width > MAX_WIDTH ||
+      node->image.height > MAX_HEIGHT ||
+      !image_dims_to_size_bytes(node->image.fmt, node->image.width, node->image.height) ||
+      array->size < IMAGE_BUFFER_HEADER_SIZE +
+          image_dims_to_size_bytes(node->image.fmt, node->image.width, node->image.height)) {
+    return false;
+  }
+  node->bounds.w = node->image.width;
+  node->bounds.h = node->image.height;
+  node->alpha = (uint8_t)alpha;
+  node->palette = fields[5];
+  unsigned colors = node->image.fmt <= indexed16 ? 1u << node->image.fmt : 0;
+  if (!scene_palette_is_valid(node->palette, colors)) {
+    return false;
+  }
+  return true;
+}
+
+static bool scene_decode_node(lbm_value value, display_scene_node_t *node) {
+  lbm_value fields[11];
+  unsigned count = 0;
+  while (lbm_is_cons(value) && count < 11) {
+    fields[count++] = lbm_car(value);
+    value = lbm_cdr(value);
+  }
+  if (value != ENC_SYM_NIL || count < 5 || !lbm_is_symbol(fields[0])) {
+    return false;
+  }
+  memset(node, 0, sizeof(*node));
+  lbm_uint symbol = lbm_dec_sym(fields[0]);
+  node->kind = SCENE_KIND_COUNT;
+  for (unsigned i = 0; i < SCENE_KIND_COUNT; i++) {
+    if (symbol == scene_symbols[i].symbol) {
+      node->kind = (display_scene_kind_t)i;
+      break;
+    }
+  }
+  node->alpha = 255;
+  node->palette = ENC_SYM_NIL;
+  if (!scene_decode_integer(fields[1], &node->bounds.x, -MAX_WIDTH, MAX_WIDTH) ||
+      !scene_decode_integer(fields[2], &node->bounds.y, -MAX_HEIGHT, MAX_HEIGHT)) {
+    return false;
+  }
+  if ((node->kind == SCENE_RECT && count == 6) ||
+      (node->kind == SCENE_ROUNDRECT && count == 7)) {
+    return scene_decode_rect(fields, node);
+  }
+  if (node->kind == SCENE_CIRCLE && count == 5) {
+    return scene_decode_circle(fields, node);
+  }
+  if (node->kind == SCENE_TTF && count == 10) {
+    return scene_decode_ttf(fields, node);
+  }
+  if (node->kind == SCENE_TEXT && count == 7) {
+    return scene_decode_text(fields, node);
+  }
+  if (node->kind == SCENE_IMAGE && count == 7) {
+    return scene_decode_image(fields, node);
+  }
+  return false;
+}
+
+static uint32_t scene_get_color(lbm_value value, int x, int y, uint8_t *alpha) {
+  color_t *color = get_color(value);
+  *alpha = color ? color->alpha : 255;
+  return color ? COLOR_TO_RGB888((*color), x, y) : lbm_dec_as_u32(value);
+}
+
+static void scene_putpixel(image_buffer_t *tile, int x, int y, uint32_t color, uint8_t alpha) {
+  if (!alpha) {
+    return;
+  }
+  if (alpha != 255) {
+    uint32_t background = getpixel(tile, x, y), blended = 0;
+    for (unsigned shift = 0; shift <= 16; shift += 8) {
+      uint32_t channel =
+        (((color >> shift) & 255) * alpha + ((background >> shift) & 255) * (255 - alpha) + 127) / 255;
+      blended |= channel << shift;
+    }
+    color = blended;
+  }
+  putpixel(tile, x, y, color);
+}
+
+static bool scene_draw_glyph(image_buffer_t *glyph, int gx, int gy, void *user_data) {
+  display_scene_glyph_context_t *context = user_data;
+  int px = context->node->pen_x + gx, py = context->node->pen_y + gy;
+  int x0 = px > context->x0 ? px : context->x0, y0 = py > context->y0 ? py : context->y0;
+  int x1 = px + glyph->width < context->x1 ? px + glyph->width : context->x1;
+  int y1 = py + glyph->height < context->y1 ? py + glyph->height : context->y1;
+  for (int y = y0; y < y1; y++) {
+    for (int x = x0; x < x1; x++) {
+      uint32_t index = getpixel(glyph, x - px, y - py);
+      if (index) {
+        uint8_t alpha;
+        uint32_t color = scene_get_color(context->palette[index], x, y, &alpha);
+        scene_putpixel(context->tile, x - context->tx, y - context->ty, color, alpha);
+      }
+    }
+  }
+  return true;
+}
+
+static bool scene_render_ttf(image_buffer_t *tile, display_scene_node_t *node,
+                             int tx, int ty, tinygfx_rect_t clip) {
+  display_scene_glyph_context_t context = {
+    .tile = tile,
+    .node = node,
+    .tx = tx,
+    .ty = ty,
+    .x0 = clip.x,
+    .y0 = clip.y,
+    .x1 = clip.x + clip.w,
+    .y1 = clip.y + clip.h
+  };
+  lbm_value palette = node->palette;
+  for (unsigned i = 0; i < (1u << node->prepared.fmt); i++) {
+    context.palette[i] = lbm_car(palette);
+    palette = lbm_cdr(palette);
+  }
+
+  color_t *background = get_color(context.palette[0]);
+  if (!background || background->alpha) {
+    for (int y = clip.y; y < clip.y + clip.h; y++) {
+      for (int x = clip.x; x < clip.x + clip.w; x++) {
+        uint8_t alpha;
+        uint32_t color = scene_get_color(context.palette[0], x, y, &alpha);
+        scene_putpixel(tile, x - tx, y - ty, color, alpha);
+      }
+    }
+  }
+  return tinygfx_prepared_text(&node->prepared, node->text, scene_draw_glyph, &context);
+}
+
+static void scene_render_image(image_buffer_t *tile, display_scene_node_t *node,
+                               int tx, int ty, tinygfx_rect_t clip) {
+  lbm_value palette[16];
+  if (node->image.fmt <= indexed16) {
+    lbm_value entries = node->palette;
+    for (unsigned i = 0; i < (1u << node->image.fmt); i++) {
+      palette[i] = lbm_car(entries);
+      entries = lbm_cdr(entries);
+    }
+  }
+
+  for (int y = clip.y; y < clip.y + clip.h; y++) {
+    for (int x = clip.x; x < clip.x + clip.w; x++) {
+      uint32_t color = getpixel(&node->image, x - node->bounds.x, y - node->bounds.y);
+      if (node->transparent != -1 && color == (uint32_t)node->transparent) {
+        continue;
+      }
+      uint8_t alpha = 255;
+      if (node->image.fmt <= indexed16) {
+        color = scene_get_color(palette[color], x, y, &alpha);
+      }
+      alpha = (uint8_t)(((unsigned)alpha * node->alpha + 127) / 255);
+      scene_putpixel(tile, x - tx, y - ty, color, alpha);
+    }
+  }
+}
+
+static unsigned scene_text_coverage(display_scene_node_t *node, int x, int y) {
+  unsigned column = (unsigned)(x - node->bounds.x) / (unsigned)node->text_scale;
+  unsigned row = (unsigned)(y - node->bounds.y) / (unsigned)node->text_scale;
+  unsigned width = node->font[0];
+  unsigned height = node->font[1];
+  unsigned bits_per_pixel = node->font[3];
+  unsigned character = (uint8_t)node->text[column / width];
+  unsigned first_character = node->font[2] == 10 ? '0' : ' ';
+  if (character < first_character || character - first_character >= node->font[2]) {
+    return 0;
+  }
+
+  unsigned bit = (row * width + column % width) * bits_per_pixel;
+  unsigned stride = (width * height * bits_per_pixel + 7) / 8;
+  unsigned offset = 4 + (character - first_character) * stride + bit / 8;
+  unsigned mask = (1u << bits_per_pixel) - 1;
+  unsigned sample = (node->font[offset] >> (bit % 8)) & mask;
+  return sample * 255 / mask;
+}
+
+static bool scene_contains_pixel(display_scene_node_t *node, int x, int y) {
+  int local_x = x - node->bounds.x;
+  int local_y = y - node->bounds.y;
+  if (node->kind == SCENE_CIRCLE) {
+    int dx = local_x - node->radius;
+    int dy = local_y - node->radius;
+    return (int64_t)dx * dx + (int64_t)dy * dy <= (int64_t)node->radius * node->radius;
+  }
+  if (node->kind != SCENE_ROUNDRECT) {
+    return true;
+  }
+
+  int radius = node->radius;
+  if (radius > node->bounds.w / 2) {
+    radius = node->bounds.w / 2;
+  }
+  if (radius > node->bounds.h / 2) {
+    radius = node->bounds.h / 2;
+  }
+  int dx = 0;
+  int dy = 0;
+  if (local_x < radius) {
+    dx = radius - local_x;
+  } else if (local_x >= node->bounds.w - radius) {
+    dx = local_x - (node->bounds.w - radius - 1);
+  }
+  if (local_y < radius) {
+    dy = radius - local_y;
+  } else if (local_y >= node->bounds.h - radius) {
+    dy = local_y - (node->bounds.h - radius - 1);
+  }
+  return !dx || !dy || dx * dx + dy * dy <= radius * radius;
+}
+
+static bool scene_render_node(image_buffer_t *tile, display_scene_node_t *node, int tx, int ty) {
+  int x0 = node->bounds.x > tx ? node->bounds.x : tx;
+  int y0 = node->bounds.y > ty ? node->bounds.y : ty;
+  int x1 = node->bounds.x + node->bounds.w;
+  int y1 = node->bounds.y + node->bounds.h;
+  if (x1 > tx + tile->width) {
+    x1 = tx + tile->width;
+  }
+  if (y1 > ty + tile->height) {
+    y1 = ty + tile->height;
+  }
+  if (x0 >= x1 || y0 >= y1) {
+    return true;
+  }
+  if (node->kind == SCENE_ROUNDRECT && lbm_is_number(node->color)) {
+    tinygfx_fill_rounded_rectangle(tile, node->bounds.x - tx, node->bounds.y - ty, node->bounds.w,
+                                   node->bounds.h, node->radius, lbm_dec_as_u32(node->color));
+    return true;
+  }
+  tinygfx_rect_t clip = {x0, y0, x1 - x0, y1 - y0};
+  if (node->kind == SCENE_TTF) {
+    return scene_render_ttf(tile, node, tx, ty, clip);
+  }
+  if (node->kind == SCENE_IMAGE) {
+    scene_render_image(tile, node, tx, ty, clip);
+    return true;
+  }
+
+  for (int y = y0; y < y1; y++) {
+    for (int x = x0; x < x1; x++) {
+      unsigned coverage = node->kind == SCENE_TEXT ? scene_text_coverage(node, x, y) : 255;
+      if (!coverage || !scene_contains_pixel(node, x, y)) {
+        continue;
+      }
+      uint8_t alpha;
+      uint32_t color = scene_get_color(node->color, x, y, &alpha);
+      alpha = (uint8_t)((alpha * coverage + 127) / 255);
+      scene_putpixel(tile, x - tx, y - ty, color, alpha);
+    }
+  }
+  return true;
+}
+
+static bool scene_render_tile(image_buffer_t *tile, int tx, int ty, void *user_data) {
+  display_scene_render_context_t *context = user_data;
+  image_buffer_clear(tile, context->state->background);
+  lbm_value slots = context->slots;
+  while (lbm_is_cons(slots)) {
+    lbm_value value = lbm_car(slots);
+    slots = lbm_cdr(slots);
+    if (value != ENC_SYM_NIL) {
+      display_scene_node_t node;
+      if (!scene_decode_node(value, &node) || !scene_render_node(tile, &node, tx, ty)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static bool scene_flush_tile(image_buffer_t *tile, int x, int y, void *context) {
+  (void)context;
+  return disp_render_image(tile, (uint16_t)x, (uint16_t)y, NULL);
+}
+
+static lbm_value ext_scene_create(lbm_value *args, lbm_uint argn) {
+  if (argn != 3 && argn != 5 && argn != 6) {
+    return ENC_SYM_TERROR;
+  }
+  int32_t width, height, slots;
+  int32_t tile_width = 32;
+  int32_t tile_height = 16;
+  if (!scene_decode_integer(args[0], &width, 1, MAX_WIDTH) ||
+      !scene_decode_integer(args[1], &height, 1, MAX_HEIGHT) ||
+      !scene_decode_integer(args[2], &slots, 1, SCENE_MAX_SLOTS)) {
+    return ENC_SYM_TERROR;
+  }
+  if (argn >= 5 &&
+      (!scene_decode_integer(args[3], &tile_width, 1, MAX_WIDTH) ||
+       !scene_decode_integer(args[4], &tile_height, 1, MAX_HEIGHT))) {
+    return ENC_SYM_TERROR;
+  }
+  if (argn == 6 && !lbm_is_number(args[5])) {
+    return ENC_SYM_TERROR;
+  }
+  if ((size_t)tile_width * tile_height > 32768) {
+    return ENC_SYM_TERROR;
+  }
+  lbm_value result = lbm_heap_allocate_list((lbm_uint)slots + 1);
+  if (!lbm_is_cons(result)) {
+    return ENC_SYM_MERROR;
+  }
+  display_scene_t prototype = {0};
+  prototype.slots = (uint16_t)slots;
+  prototype.tile_width = (uint16_t)tile_width;
+  prototype.tile_height = (uint16_t)tile_height;
+  lbm_value state;
+  if (!lbm_heap_allocate_array(&state, (lbm_uint)scene_size_bytes(&prototype))) {
+    return ENC_SYM_MERROR;
+  }
+  lbm_set_car(result, state);
+  lbm_value p = lbm_cdr(result);
+  while (lbm_is_cons(p)) {
+    lbm_set_car(p, ENC_SYM_NIL);
+    p = lbm_cdr(p);
+  }
+  display_scene_t *scene = (display_scene_t *)lbm_dec_array_rw(state)->data;
+  memset(scene, 0, scene_size_bytes(&prototype));
+  *scene = prototype;
+  scene->magic = SCENE_MAGIC;
+  scene->background = argn == 6 ? lbm_dec_as_u32(args[5]) : 0;
+  tinygfx_scene_init(&scene->scheduler, (uint16_t)width, (uint16_t)height);
+  return result;
+}
+
+static lbm_value ext_scene_set(lbm_value *args, lbm_uint argn) {
+  display_scene_t *scene;
+  int32_t index;
+  if (argn != 3 || !(scene = scene_get_state(args[0])) ||
+      !scene_decode_integer(args[1], &index, 0, scene->slots - 1)) {
+    return ENC_SYM_TERROR;
+  }
+  display_scene_node_t node;
+  bool remove = args[2] == ENC_SYM_NIL;
+  if (!remove && !scene_decode_node(args[2], &node)) {
+    return ENC_SYM_TERROR;
+  }
+  if (!remove && node.kind == SCENE_TTF &&
+      !tinygfx_prepared_text(&node.prepared, node.text, NULL, NULL)) {
+    return ENC_SYM_TERROR;
+  }
+  tinygfx_rect_t *bounds = (tinygfx_rect_t *)(scene + 1);
+  tinygfx_scene_invalidate(&scene->scheduler, bounds[index]);
+  bounds[index] = remove ? (tinygfx_rect_t){0} : node.bounds;
+  tinygfx_scene_invalidate(&scene->scheduler, bounds[index]);
+  lbm_value cell = lbm_cdr(args[0]);
+  for (int i = 0; i < index; i++) {
+    cell = lbm_cdr(cell);
+  }
+  lbm_set_car(cell, args[2]);
+  return ENC_SYM_TRUE;
+}
+
+static lbm_value ext_scene_invalidate(lbm_value *args, lbm_uint argn) {
+  display_scene_t *scene;
+  if ((argn != 1 && argn != 5) || !(scene = scene_get_state(args[0]))) {
+    return ENC_SYM_TERROR;
+  }
+  tinygfx_rect_t r = {0, 0, scene->scheduler.width, scene->scheduler.height};
+  if (argn == 5 &&
+      (!scene_decode_integer(args[1], &r.x, -MAX_WIDTH, MAX_WIDTH) ||
+       !scene_decode_integer(args[2], &r.y, -MAX_HEIGHT, MAX_HEIGHT) ||
+       !scene_decode_integer(args[3], &r.w, 0, MAX_WIDTH) ||
+       !scene_decode_integer(args[4], &r.h, 0, MAX_HEIGHT))) {
+    return ENC_SYM_TERROR;
+  }
+  tinygfx_scene_invalidate(&scene->scheduler, r);
+  return ENC_SYM_TRUE;
+}
+
+static lbm_value ext_scene_get(lbm_value *args, lbm_uint argn) {
+  display_scene_t *scene;
+  int32_t index;
+  if (argn != 2 || !(scene = scene_get_state(args[0])) ||
+      !scene_decode_integer(args[1], &index, 0, scene->slots - 1)) {
+    return ENC_SYM_TERROR;
+  }
+  lbm_value cell = lbm_cdr(args[0]);
+  for (int i = 0; i < index; i++) {
+    cell = lbm_cdr(cell);
+  }
+  return lbm_car(cell);
+}
+
+static lbm_value ext_scene_background(lbm_value *args, lbm_uint argn) {
+  display_scene_t *scene;
+  if (argn != 2 || !(scene = scene_get_state(args[0])) || !lbm_is_number(args[1])) {
+    return ENC_SYM_TERROR;
+  }
+  scene->background = lbm_dec_as_u32(args[1]);
+  tinygfx_scene_invalidate(&scene->scheduler,
+                           (tinygfx_rect_t){0, 0, scene->scheduler.width, scene->scheduler.height});
+  return ENC_SYM_TRUE;
+}
+
+static lbm_value ext_scene_render(lbm_value *args, lbm_uint argn) {
+  display_scene_t *scene;
+  if (argn != 1 || !(scene = scene_get_state(args[0]))) {
+    return ENC_SYM_TERROR;
+  }
+  if (!disp_render_image || disp_render_image == display_dummy_render_image) {
+    lbm_set_error_reason(msg_not_supported);
+    return ENC_SYM_EERROR;
+  }
+  lbm_value p = lbm_cdr(args[0]);
+  while (lbm_is_cons(p)) {
+    display_scene_node_t node;
+    if (lbm_car(p) != ENC_SYM_NIL && !scene_decode_node(lbm_car(p), &node)) {
+      return ENC_SYM_TERROR;
+    }
+    if (lbm_car(p) != ENC_SYM_NIL && node.kind == SCENE_TTF &&
+        !tinygfx_prepared_text(&node.prepared, node.text, NULL, NULL)) {
+      return ENC_SYM_TERROR;
+    }
+    p = lbm_cdr(p);
+  }
+  uint8_t *scratch = (uint8_t *)(scene + 1) + scene->slots * sizeof(tinygfx_rect_t);
+  image_buffer_t tile = {rgb565, scene->tile_width, scene->tile_height, scratch, scratch};
+  display_scene_render_context_t context = {scene, lbm_cdr(args[0])};
+  if (!tinygfx_scene_render(&scene->scheduler, &tile, scene_render_tile, scene_flush_tile,
+                            &context)) {
+    lbm_set_error_reason("Scene render failed; dirty regions retained for retry.");
+    return ENC_SYM_EERROR;
+  }
+  return ENC_SYM_TRUE;
+}
+
 void lbm_display_extensions_init(void) {
   register_symbols();
 
   disp_render_image = NULL;
   disp_clear = NULL;
   disp_reset = NULL;
+
+  lbm_add_extension("scene-create", ext_scene_create);
+  lbm_add_extension("scene-set", ext_scene_set);
+  lbm_add_extension("scene-get", ext_scene_get);
+  lbm_add_extension("scene-invalidate", ext_scene_invalidate);
+  lbm_add_extension("scene-background", ext_scene_background);
+  lbm_add_extension("scene-render", ext_scene_render);
 
   lbm_add_extension("img-buffer", ext_image_buffer);
   lbm_add_extension("img-buffer?", ext_is_image_buffer);
