@@ -21,6 +21,29 @@
 
 
 #include "lispif_disp_extensions.h"
+#include "hw.h"
+
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "display/disp_st7701.h"
+#include "utils.h"
+#endif
+
+#ifdef HW_USE_TINYSG
+#include "tinysg.h"
+#include "tinysg_lisp.h"
+
+static disp_render_callback_t m_render_image;
+
+static bool tinysg_render_image(void *ctx, uint16_t x, uint16_t y, uint16_t width, uint16_t height, const uint8_t *pixels) {
+	(void)ctx;
+	if ((uint32_t)x + width > UINT16_MAX + 1u || (uint32_t)y + height > UINT16_MAX + 1u) {
+		return false;
+	}
+	image_buffer_t image = {.fmt = rgb565, .width = width, .height = height, .data = (uint8_t *)pixels};
+	return m_render_image(&image, x, y, NULL);
+}
+
+#else
 #include "lispif.h"
 #include "lbm_utils.h"
 #include "lbm_custom_type.h"
@@ -41,7 +64,6 @@
 #include "display/disp_jd9853.h"
 
 #if CONFIG_IDF_TARGET_ESP32P4
-#include "display/disp_st7701.h"
 #include "display/disp_jd9165.h"
 #endif
 
@@ -78,7 +100,7 @@ static lbm_value ext_disp_load_sh8501b(lbm_value *args, lbm_uint argn) {
 
 	disp_sh8501b_init(gpio_sd0, gpio_clk, gpio_cs, gpio_reset, spi_mhz);
 
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_sh8501b_render_image,
 			disp_sh8501b_clear,
 			disp_sh8501b_reset);
@@ -114,7 +136,7 @@ static lbm_value ext_disp_load_sh8601(lbm_value *args, lbm_uint argn) {
 
 	disp_sh8601_init(gpio_sd0, gpio_clk, gpio_cs, gpio_reset, gpio_dc, spi_mhz);
 
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_sh8601_render_image,
 			disp_sh8601_clear,
 			disp_sh8601_reset);
@@ -150,7 +172,7 @@ static lbm_value ext_disp_load_ili9341(lbm_value *args, lbm_uint argn) {
 
 	disp_ili9341_init(gpio_sd0, gpio_clk, gpio_cs, gpio_reset, gpio_dc, spi_mhz);
 
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_ili9341_render_image,
 			disp_ili9341_clear,
 			disp_ili9341_reset);
@@ -176,7 +198,7 @@ static lbm_value ext_disp_load_ssd1306(lbm_value *args, lbm_uint argn) {
 	}
 
 	disp_ssd1306_init(gpio_sda, gpio_scl, clk_speed);
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_ssd1306_render_image,
 			disp_ssd1306_clear,
 			disp_ssd1306_reset);
@@ -211,7 +233,7 @@ static lbm_value ext_disp_load_st7789(lbm_value *args, lbm_uint argn) {
 
 	disp_st7789_init(gpio_sd0, gpio_clk, gpio_cs, gpio_reset, gpio_dc, spi_mhz);
 
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_st7789_render_image,
 			disp_st7789_clear,
 			disp_st7789_reset);
@@ -246,7 +268,7 @@ static lbm_value ext_disp_load_st7789a(lbm_value *args, lbm_uint argn) {
 
 	disp_st7789a_init(gpio_sd0, gpio_clk, gpio_cs, gpio_reset, gpio_dc, spi_mhz);
 
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_st7789a_render_image,
 			disp_st7789a_clear,
 			disp_st7789a_reset);
@@ -282,7 +304,7 @@ static lbm_value ext_disp_load_ili9488(lbm_value *args, lbm_uint argn) {
 
 	disp_ili9488_init(gpio_sd0, gpio_clk, gpio_cs, gpio_reset, gpio_dc, spi_mhz);
 
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_ili9488_render_image,
 			disp_ili9488_clear,
 			disp_ili9488_reset);
@@ -315,7 +337,7 @@ static lbm_value ext_disp_load_st7735(lbm_value *args, lbm_uint argn) {
 	}
 
 	disp_st7735_init(gpio_sd0, gpio_clk, gpio_cs, gpio_reset, gpio_dc, spi_mhz);
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_st7735_render_image,
 			disp_st7735_clear,
 			disp_st7735_reset);
@@ -350,7 +372,7 @@ static lbm_value ext_disp_load_ssd1351(lbm_value *args, lbm_uint argn) {
 
 	disp_ssd1351_init(gpio_sd0, gpio_clk, gpio_cs, gpio_reset, gpio_dc, spi_mhz);
 
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_ssd1351_render_image,
 			disp_ssd1351_clear,
 			disp_ssd1351_reset);
@@ -384,7 +406,7 @@ static lbm_value ext_disp_load_icna3306(lbm_value *args, lbm_uint argn) {
 
 	disp_icna3306_init(gpio_sd0, gpio_clk, gpio_cs, gpio_reset, spi_mhz);
 
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_icna3306_render_image,
 			disp_icna3306_clear,
 			disp_icna3306_reset);
@@ -422,7 +444,7 @@ static lbm_value ext_disp_load_axs15231(lbm_value *args, lbm_uint argn) {
 
 	disp_axs15231_init(gpio_sd0, gpio_sd1, gpio_sd2, gpio_sd3, gpio_clk, gpio_cs, gpio_reset, spi_mhz);
 
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_axs15231_render_image,
 			disp_axs15231_clear,
 			disp_axs15231_reset);
@@ -456,7 +478,7 @@ static lbm_value ext_disp_load_gc9a01(lbm_value *args, lbm_uint argn) {
 
 	disp_gc9a01_init(gpio_sd0, gpio_clk, gpio_cs, gpio_reset, gpio_dc, spi_mhz);
 
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_gc9a01_render_image,
 			disp_gc9a01_clear,
 			disp_gc9a01_reset);
@@ -490,7 +512,7 @@ static lbm_value ext_disp_load_jd9853(lbm_value *args, lbm_uint argn) {
 
 	disp_jd9853_init(gpio_sd0, gpio_clk, gpio_cs, gpio_reset, gpio_dc, spi_mhz);
 
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_jd9853_render_image,
 			disp_jd9853_clear,
 			disp_jd9853_reset);
@@ -517,47 +539,45 @@ static lbm_value ext_disp_load_jd9165(lbm_value *args, lbm_uint argn) {
 
 	disp_jd9165_init(pin_rst, lane_mbps);
 
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_jd9165_render_image,
 			disp_jd9165_clear,
 			disp_jd9165_reset);
 
 	return ENC_SYM_TRUE;
 }
+#endif
+#endif
 
-static lbm_value ext_disp_load_st7701(lbm_value *args, lbm_uint argn) {
 #if CONFIG_IDF_TARGET_ESP32P4
+static lbm_value ext_disp_load_st7701(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(2);
 
 	int pin_rst = lbm_dec_as_i32(args[0]);
 	int lane_mbps = lbm_dec_as_i32(args[1]);
 
 	if (pin_rst >= 0 && !utils_gpio_is_valid(pin_rst)) {
-		lbm_set_error_reason(msg_invalid_gpio);
+		lbm_set_error_reason("Invalid GPIO");
 		return ENC_SYM_EERROR;
 	}
 	if (lane_mbps <= 0 || lane_mbps > 4000) {
-		lbm_set_error_reason(msg_invalid_clk_speed);
+		lbm_set_error_reason("Invalid clock speed");
 		return ENC_SYM_EERROR;
 	}
 
 	disp_st7701_init(pin_rst, lane_mbps);
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 			disp_st7701_render_image,
 			disp_st7701_clear,
 			disp_st7701_reset);
 	return ENC_SYM_TRUE;
-#else
-	(void)args;
-	(void)argn;
-	lbm_set_error_reason("ST7701 display is only available on ESP32P4");
-	return ENC_SYM_EERROR;
-#endif
 }
 #endif
 
 void lispif_load_disp_extensions(void) {
-
+#ifdef HW_USE_TINYSG
+	lispif_tinysg_init();
+#else
 	lbm_display_extensions_init();
 
 	lbm_add_extension("disp-load-sh8501b", ext_disp_load_sh8501b);
@@ -573,10 +593,21 @@ void lispif_load_disp_extensions(void) {
 	lbm_add_extension("disp-load-axs15231", ext_disp_load_axs15231);
 	lbm_add_extension("disp-load-gc9a01", ext_disp_load_gc9a01);
 	lbm_add_extension("disp-load-jd9853", ext_disp_load_jd9853);
+#endif
 
-	#if CONFIG_IDF_TARGET_ESP32P4
+#if CONFIG_IDF_TARGET_ESP32P4
 	lbm_add_extension("disp-load-st7701", ext_disp_load_st7701);
+#ifndef HW_USE_TINYSG
 	lbm_add_extension("disp-load-jd9165", ext_disp_load_jd9165);
-	#endif
+#endif
+#endif
 }
 
+void lispif_disp_set_callbacks(disp_render_callback_t render, void (*clear)(uint32_t), void (*reset)(void)) {
+#ifdef HW_USE_TINYSG
+	m_render_image = render;
+	tinysg_display_extensions_set_callbacks(render ? tinysg_render_image : NULL, clear, reset);
+#else
+	lbm_display_extensions_set_callbacks(render, clear, reset);
+#endif
+}

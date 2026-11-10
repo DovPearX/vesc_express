@@ -16,6 +16,10 @@
  */
 
 #include "disp_st7701.h"
+#include "hw.h"
+#ifdef HW_USE_TINYSG
+#include "tinysg_esp32p4.h"
+#endif
 
 #if CONFIG_IDF_TARGET_ESP32P4
 
@@ -157,6 +161,7 @@ static bool convert_to_rgb565(const image_buffer_t *img, color_t *colors, uint16
     uint32_t num_pix = (uint32_t)img->width * (uint32_t)img->height;
 
     switch (img->fmt) {
+#ifndef HW_USE_TINYSG
     case indexed2:
         if (!colors) {
             return false;
@@ -196,6 +201,7 @@ static bool convert_to_rgb565(const image_buffer_t *img, color_t *colors, uint16
         }
         return true;
 
+#endif
     case rgb332:
         for (uint32_t i = 0; i < num_pix; i++) {
             uint8_t pix = img->data[i];
@@ -290,13 +296,17 @@ bool disp_st7701_render_image(image_buffer_t *img, uint16_t x, uint16_t y, color
 
     uint16_t *send_buf = frame;
     uint16_t *rotated = NULL;
+    size_t rotated_bytes = ((num_pix * sizeof(uint16_t) + 127) / 128) * 128;
     if (m_rotation != 0) {
-        rotated = heap_caps_malloc(num_pix * sizeof(uint16_t), MALLOC_CAP_8BIT);
+        rotated = heap_caps_aligned_alloc(128, rotated_bytes, MALLOC_CAP_8BIT);
         if (!rotated) {
             free(frame);
             return false;
         }
-        rotate_rgb565(frame, rotated, img->width, img->height, m_rotation);
+#ifdef HW_USE_TINYSG
+        if (!tinysg_esp32p4_rotate(frame, rotated, img->width, img->height, m_rotation, rotated_bytes))
+#endif
+            rotate_rgb565(frame, rotated, img->width, img->height, m_rotation);
         send_buf = rotated;
     }
 

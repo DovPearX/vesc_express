@@ -36,7 +36,10 @@
 #include "extensions/math_extensions.h"
 #include "extensions/mutex_extensions.h"
 #include "extensions/lbm_dyn_lib.h"
+#include "hw.h"
+#ifndef HW_USE_TINYSG
 #include "extensions/ttf_extensions.h"
+#endif
 #include "lispif_disp_extensions.h"
 #include "lispif_touch_extensions.h"
 #include "lispif_wifi_extensions.h"
@@ -7286,7 +7289,9 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_math_extensions_init();
 		lbm_color_extensions_init();
 		lbm_mutex_extensions_init();
+		#ifndef HW_USE_TINYSG
 		lbm_ttf_extensions_init();
+		#endif
 		lbm_dyn_lib_init();
 		lbm_array_extensions_init();
 		lbm_string_extensions_init();

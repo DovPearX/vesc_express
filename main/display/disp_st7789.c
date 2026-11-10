@@ -25,6 +25,7 @@
 #include "soc/gpio_reg.h"
 
 #include "disp_st7789.h"
+#include "hw.h"
 #include "hwspi.h"
 #include "lispif.h"
 #include "lispbm.h"
@@ -86,6 +87,7 @@ static uint16_t to_disp_color(uint32_t rgb) {
 	return color;
 }
 
+#ifndef HW_USE_TINYSG
 static void blast_indexed2(image_buffer_t *img, color_t *colors) {
 	command_start(0x2C);
 	hwspi_data_stream_start();
@@ -151,6 +153,8 @@ static void blast_indexed16(image_buffer_t *img, color_t *colors) {
 	hwspi_data_stream_finish();
 }
 
+
+#endif
 
 static void blast_rgb332(uint8_t *data, uint32_t num_pix) {
 	command_start(0x2C);
@@ -229,6 +233,7 @@ bool disp_st7789_render_image(image_buffer_t *img, uint16_t x, uint16_t y, color
 
 	hwspi_begin();
 	switch(img->fmt) {
+#ifndef HW_USE_TINYSG
 	case indexed2:
 		if (!colors) return false;
 		blast_indexed2(img, colors);
@@ -241,6 +246,7 @@ bool disp_st7789_render_image(image_buffer_t *img, uint16_t x, uint16_t y, color
 		if (!colors) return false;
 		blast_indexed16(img, colors);
 		break;
+#endif
 	case rgb332:
 		blast_rgb332(img->data, num_pix);
 		break;

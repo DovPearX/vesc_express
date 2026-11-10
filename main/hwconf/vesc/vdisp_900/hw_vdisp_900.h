@@ -27,6 +27,7 @@
 #define HW_TARGET                   "esp32c3"
 
 #define HW_NO_UART
+#define HW_USE_TINYSG
 #define HW_EARLY_LBM_INIT
 
 #define HW_INIT_HOOK()				hw_init()

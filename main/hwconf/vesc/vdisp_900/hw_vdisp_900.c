@@ -261,6 +261,7 @@ static void disp_command(uint8_t command, const uint8_t *args, int argn) {
 	SET_CS();
 }
 
+#ifndef HW_USE_TINYSG
 static void blast_indexed2(image_buffer_t *img, color_t *colors) {
 	disp_command_start(0x2C);
 
@@ -385,6 +386,8 @@ static void blast_indexed16(image_buffer_t *img, color_t *colors) {
 	io_restore();
 }
 
+#endif
+
 static void blast_rgb332(uint8_t *data, uint32_t num_pix) {
 	disp_command_start(0x2C);
 
@@ -433,9 +436,9 @@ static void blast_rgb565(uint8_t *data, uint32_t num_pix) {
 		uint16_t pix = (((uint16_t)data[2 * i]) << 8)
 			| ((uint16_t)data[2 * i + 1]);
 
-		uint32_t r = (uint32_t)(pix >> 11);
-		uint32_t g = (uint32_t)((pix >> 5) & 0x3F);
-		uint32_t b = (uint32_t)(pix & 0x1F);
+		uint32_t r = (uint32_t)(pix >> 11) << 3;
+		uint32_t g = (uint32_t)((pix >> 5) & 0x3F) << 2;
+		uint32_t b = (uint32_t)(pix & 0x1F) << 3;
 
 		bus_data = r & 0xFC;
 		dedic_gpio_cpu_ll_write_all(bus_data);
@@ -522,6 +525,7 @@ bool disp_render_image(
 	uint32_t num_pix = img->width * img->height;
 
 	switch (img->fmt) {
+#ifndef HW_USE_TINYSG
 		case indexed2:
 			if (!colors)
 				return false;
@@ -537,6 +541,7 @@ bool disp_render_image(
 				return false;
 			blast_indexed16(img, colors);
 			break;
+#endif
 		case rgb332:
 			blast_rgb332(img->data, num_pix);
 			break;
@@ -746,7 +751,7 @@ static void load_extensions(bool main_found) {
 	i2c_write_reg(I2C_ADDR_TCA9535, GPIO_EXP_CONF0_REG, 0x10);
 	i2c_write_reg(I2C_ADDR_TCA9535, GPIO_EXP_OUT0_REG, 0b00001111);
 
-	lbm_display_extensions_set_callbacks(
+	lispif_disp_set_callbacks(
 		disp_render_image, disp_clear, disp_reset
 	);
 

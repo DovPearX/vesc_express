@@ -29,4 +29,8 @@
 
 void lispif_load_disp_extensions(void);
 
+typedef bool (*disp_render_callback_t)(image_buffer_t *img, uint16_t x, uint16_t y, color_t *colors);
+
+void lispif_disp_set_callbacks(disp_render_callback_t render, void (*clear)(uint32_t), void (*reset)(void));
+
 #endif

@@ -104,6 +104,28 @@ set(COMPONENT_SRCS
 "lowzip/lowzip.c"
 )
 
+idf_build_get_property(use_tinysg VESC_USE_TINYSG)
+if(use_tinysg)
+    list(FILTER COMPONENT_SRCS EXCLUDE REGEX "^display/disp_")
+    list(REMOVE_ITEM COMPONENT_SRCS
+        "lispBM/src/extensions/display_extensions.c"
+        "lispBM/src/extensions/ttf_extensions.c"
+        "lispBM/src/extensions/schrift.c"
+        "lispBM/src/extensions/ttf_backend.c"
+        "lispBM/utils/tjpgd.c"
+        "lispBM/utils/tinygfx.c"
+    )
+    list(APPEND COMPONENT_SRCS "tinySG/port/tinysg_lisp.c" "tinySG/port/tinysg_image.c" "tinySG/port/tinysg_jpeg.c")
+
+    idf_build_get_property(tinysg_hw VESC_HW_FILE)
+    if(tinysg_hw STREQUAL "hw_dash16")
+        list(APPEND COMPONENT_SRCS "display/disp_st7789.c")
+    endif()
+    if(CONFIG_IDF_TARGET_ESP32P4)
+        list(APPEND COMPONENT_SRCS "display/disp_st7701.c")
+    endif()
+endif()
+
 if(CONFIG_BT_NIMBLE_ENABLED)
     list(APPEND COMPONENT_SRCS
         "ble/lispif_ble_extensions.c"
@@ -115,6 +137,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "config"
 "hwconf"
 "hwconf/devkits"
+"hwconf/guition"
 "hwconf/trampa"
 "hwconf/trampa/bms_rb"
 "hwconf/vesc"
@@ -154,6 +177,15 @@ idf_component_register(SRCS ${COMPONENT_SRCS}
     INCLUDE_DIRS ${COMPONENT_ADD_INCLUDEDIRS}
 )
 
+if(use_tinysg)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE EXTENSION_STORAGE_SIZE=352)
+    add_subdirectory(tinySG)
+    target_link_libraries(${COMPONENT_LIB} PRIVATE tinySG::tinySG)
+    target_include_directories(${COMPONENT_LIB} PRIVATE "tinySG/port")
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE USE_TINYGFX_FONT_ALL)
+endif()
+
 if(CONFIG_BT_NIMBLE_ENABLED)
     idf_component_get_property(bt_dir bt COMPONENT_DIR)
     target_include_directories(${COMPONENT_LIB} PRIVATE
@@ -166,7 +198,6 @@ if(NOT DEFINED ENV{HW_SRC} AND NOT DEFINED ENV{HW_HEADER})
 endif()
 
 add_compile_definitions(
-    USE_TINYGFX_FONT_ALL
     LBM_USE_DYN_FUNS
     LBM_USE_DYN_MACROS
     LBM_USE_DYN_LOOPS
