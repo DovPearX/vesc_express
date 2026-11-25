@@ -25,13 +25,10 @@
 #include "soc/soc_caps.h"
 
 #include "conf_general.h"
-#include "comm_ble.h"
 #include "comm_uart.h"
 #include "comm_usb.h"
 #include "comm_can.h"
-#include "comm_wifi.h"
 #include "commands.h"
-#include "flash_helper.h"
 #include "crc.h"
 
 #ifdef OVR_CONF_XML_H
@@ -46,16 +43,9 @@
 #include "confparser.h"
 #endif
 
-#include "log.h"
-#include "adc.h"
-#include "ublox.h"
-#include "nmea.h"
 #include "terminal.h"
 #include "main.h"
 #include "mempools.h"
-#include "lispif.h"
-#include "bms.h"
-#include "ble/custom_ble.h"
 
 #include <string.h>
 #include <stddef.h>
@@ -68,13 +58,7 @@ volatile backup_data backup;
 // Private variables
 volatile static bool init_done = false;
 
-// Private functions
-static void terminal_nmea(int argc, const char **argv);
-static void terminal_ublox_reinit(int argc, const char **argv);
-
 void app_main(void) {
-	flash_helper_init();
-
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	tv.tv_sec = 0;
@@ -107,7 +91,7 @@ void app_main(void) {
 		}
 
 		if (backup.controller_id_init_flag != VAR_INIT_CODE) {
-			backup.controller_id = HW_DEFAULT_ID;
+			backup.controller_id = CONF_CONTROLLER_ID;
 			backup.controller_id_init_flag = VAR_INIT_CODE;
 		}
 
@@ -128,24 +112,7 @@ void app_main(void) {
 
 	}
 
-#if !(CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_WIFI_REMOTE_ENABLED)
-	backup.config.wifi_mode = WIFI_MODE_DISABLED;
-#endif
-#if !CONFIG_BT_NIMBLE_ENABLED
-	backup.config.ble_mode = BLE_MODE_DISABLED;
-	backup.config.ble_mode_lbm = BLE_MODE_LBM_DISABLED;
-#endif
-
-	adc_init();
-
-#ifdef HW_EARLY_LBM_INIT
-	HW_INIT_HOOK();
-	lispif_init();
-	HW_POST_LISPIF_HOOK();
-#endif
-
 	mempools_init();
-	bms_init();
 	commands_init();
 #ifdef CAN_TX_GPIO_NUM
 	comm_can_start(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM);
@@ -156,56 +123,11 @@ void app_main(void) {
 
 	vTaskDelay(1);
 
-	#if CONFIG_BT_NIMBLE_ENABLED
-	if (backup.config.ble_mode != BLE_MODE_DISABLED ||
-		backup.config.ble_mode_lbm != BLE_MODE_LBM_DISABLED) {
-		custom_ble_init();
-		comm_ble_init();
-	}
-	#endif
-
-	#if CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_WIFI_REMOTE_ENABLED
-	if (backup.config.wifi_mode != WIFI_MODE_DISABLED) {
-		comm_wifi_init();
-	}
-	#endif
-
-	nmea_init();
-	log_init();
-#ifdef HW_SDMMC_SLOT
-	log_mount_card_sdmmc(HW_SDMMC_SLOT, HW_SDMMC_WIDTH, SDMMC_FREQ_DEFAULT);
-#elif defined(SD_PIN_MOSI)
-	log_mount_card(SD_PIN_MOSI, SD_PIN_MISO, SD_PIN_SCK, SD_PIN_CS, SDMMC_FREQ_DEFAULT);
-#endif
-#ifdef NAND_PIN_MOSI
-	log_mount_nand_flash(NAND_PIN_MOSI, NAND_PIN_MISO, NAND_PIN_SCK, NAND_PIN_CS, FLASH_FREQ_KHZ);
-#endif
-
-#ifndef HW_EARLY_LBM_INIT
 	HW_INIT_HOOK();
-	lispif_init();
-	HW_POST_LISPIF_HOOK();
-#endif
 
-#ifndef HW_NO_UART
-#ifdef HW_UART_COMM
+#if !defined(HW_NO_UART) && defined(HW_UART_COMM)
 	comm_uart_init(UART_TX, UART_RX, UART_NUM, UART_BAUDRATE);
-#else
-	ublox_init(false, 500, UART_NUM, UART_RX, UART_TX);
 #endif
-#endif
-
-	terminal_register_command_callback(
-			"nmea_info",
-			"Print NMEA message information",
-			0,
-			terminal_nmea);
-
-	terminal_register_command_callback(
-			"ublox_reinit",
-			"Re-initialize ublox gnss receiver",
-			0,
-			terminal_ublox_reinit);
 
 	init_done = true;
 
@@ -214,21 +136,7 @@ void app_main(void) {
 }
 
 uint32_t main_calc_hw_crc(void) {
-	uint32_t crc = 0;
-
-	crc = crc32_with_init(
-			data_main_config_t_,
-			DATA_MAIN_CONFIG_T__SIZE,
-			crc);
-
-	if (flash_helper_code_size(CODE_IND_QML) > 0) {
-		crc = crc32_with_init(
-				flash_helper_code_data_ptr(CODE_IND_QML),
-				flash_helper_code_size(CODE_IND_QML),
-				crc);
-	}
-
-	return crc;
+	return crc32_with_init(data_main_config_t_, DATA_MAIN_CONFIG_T__SIZE, 0);
 }
 
 void main_store_backup_data(void) {
@@ -249,39 +157,4 @@ void main_wait_until_init_done(void) {
 	while (!init_done) {
 		vTaskDelay(5 / portTICK_PERIOD_MS);
 	}
-}
-
-static void terminal_nmea(int argc, const char **argv) {
-	(void)argc;(void)argv;
-	nmea_state_t *s = nmea_get_state();
-
-	commands_printf(
-			"GGA Cnt   : %d\n"
-			"GSV GP cnt: %d\n"
-			"GSV GL cnt: %d\n"
-			"RMC cnt   : %d\n"
-			"Fix Type  : %s\n"
-			"Num sats  : %d\n"
-			"HDOP      : %.2f\n"
-			"Lat       : %.8f\n"
-			"Lon       : %.8f\n"
-			"Height    : %f\n"
-			"Time      : %02d-%02d-%02d %02d:%02d:%02d\n",
-			s->gga_cnt,
-			s->gsv_gp_cnt,
-			s->gsv_gl_cnt,
-			s->rmc_cnt,
-			nmea_fix_type(),
-			s->gga.n_sat,
-			s->gga.h_dop,
-			s->gga.lat,
-			s->gga.lon,
-			s->gga.height,
-			s->rmc.yy, s->rmc.mo, s->rmc.dd, s->rmc.hh, s->rmc.mm, s->rmc.ss
-			);
-}
-
-static void terminal_ublox_reinit(int argc, const char **argv) {
-	(void)argc;(void)argv;
-	commands_printf("Res: %d", ublox_init(true, 500, UART_NUM, UART_RX, UART_TX));
 }

@@ -18,8 +18,6 @@
  */
 
 #include "hw_devkit_c3.h"
-#include "lispif.h"
-#include "lispbm.h"
 
 void hw_init(void) {
 

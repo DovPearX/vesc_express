@@ -1,6 +1,0 @@
-
-(DEFINE APA 10)
-
-(IF (= APA 10)
-    (PRINT "SUCCESS")
-    (PRINT "FAILURE"))

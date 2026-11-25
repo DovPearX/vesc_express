@@ -15,7 +15,7 @@ if(NOT DEFINED HW_NAME OR "${HW_NAME}" STREQUAL "")
         elseif(IDF_TARGET STREQUAL "esp32p4")
             set(HW_NAME "P4 NRW32N16")
         elseif(IDF_TARGET STREQUAL "esp32c3")
-            set(HW_NAME "VESC Express T")
+            set(HW_NAME "Devkit C3")
         elseif(IDF_TARGET STREQUAL "esp32s3_fh4")
             set(HW_NAME "Devkit S3 FH4")
         elseif(IDF_TARGET STREQUAL "esp32c6_fh4")
@@ -28,7 +28,7 @@ if(NOT DEFINED HW_NAME OR "${HW_NAME}" STREQUAL "")
     endif()
 
     if(NOT DEFINED HW_NAME OR "${HW_NAME}" STREQUAL "")
-        set(HW_NAME "VESC Express T")
+        set(HW_NAME "Devkit C3")
     endif()
 endif()
 
@@ -41,9 +41,6 @@ foreach(HW_HEADER_PATH ${HW_HEADER_PATHS})
     file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/${HW_HEADER_PATH}" FILE_CONTENTS)
     set(IS_HW_MATCH false)
     set(FILE_HW_TARGET "")
-    set(FILE_HW_INTERNAL_FS 0)
-    set(FILE_HW_NO_WIFI 0)
-    set(FILE_HW_NO_BLE 0)
 
     foreach(LINE IN LISTS FILE_CONTENTS)
         string(REGEX MATCH "^#define[ \t]+([A-Za-z_][A-Za-z0-9_]*)([ \t]+(.*))?$" MATCHES "${LINE}")
@@ -62,12 +59,6 @@ foreach(HW_HEADER_PATH ${HW_HEADER_PATHS})
 
             if (DEF_KEY STREQUAL "HW_TARGET")
                 set(FILE_HW_TARGET ${DEF_VAL})
-            elseif(DEF_KEY STREQUAL "HW_INTERNAL_FS")
-                set(FILE_HW_INTERNAL_FS 1)
-            elseif(DEF_KEY STREQUAL "HW_NO_WIFI")
-                set(FILE_HW_NO_WIFI 1)
-            elseif(DEF_KEY STREQUAL "HW_NO_BLE")
-                set(FILE_HW_NO_BLE 1)
             endif()
         endif()
     endforeach()
@@ -75,9 +66,6 @@ foreach(HW_HEADER_PATH ${HW_HEADER_PATHS})
     if(IS_HW_MATCH AND NOT "${FILE_HW_TARGET}" STREQUAL "")
         set(HW_TARGET ${FILE_HW_TARGET})
         set(HW_FILE_NAME ${HW_HEADER_PATH})
-        set(HW_INTERNAL_FS ${FILE_HW_INTERNAL_FS})
-        set(HW_NO_WIFI ${FILE_HW_NO_WIFI})
-        set(HW_NO_BLE ${FILE_HW_NO_BLE})
         break()
     endif()
 endforeach()
@@ -115,36 +103,6 @@ if(DEFINED HW_NAME AND DEFINED HW_TARGET AND DEFINED HW_FILE_NAME)
     endif()
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${SDKCONFIG_DEFAULTS_FILE}")
     set(SDKCONFIG_DEFAULTS ${SDKCONFIG_DEFAULTS_FILE})
-
-    # Auto-generate QML files if any *.qml files exist alongside the HW config
-    get_filename_component(HW_DIR ${HW_FILE_NAME} DIRECTORY)
-    file(GLOB QMLUI_QML_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/${HW_DIR}/*.qml")
-    
-    if(QMLUI_QML_SRCS)
-        find_package(Python3 REQUIRED COMPONENTS Interpreter)
-        set(QMLUI_OUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${HW_DIR}")
-        set(QMLUI_GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/create_qmlui_hw.py")
-        
-        foreach(QMLUI_QML_SRC IN LISTS QMLUI_QML_SRCS)
-            # Tell CMake to re-run configuration if the QML file or generator changes
-            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${QMLUI_QML_SRC} ${QMLUI_GENERATOR})
-            
-            message(STATUS "Generating QMLUI HW from ${QMLUI_QML_SRC}")
-            execute_process(
-                COMMAND ${Python3_EXECUTABLE}
-                    "${QMLUI_GENERATOR}"
-                    "${QMLUI_QML_SRC}" "${QMLUI_OUT_DIR}"
-                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                RESULT_VARIABLE QMLUI_RESULT
-                OUTPUT_VARIABLE QMLUI_OUTPUT
-                ERROR_VARIABLE QMLUI_ERROR
-            )
-            if(NOT QMLUI_RESULT EQUAL 0)
-                message(FATAL_ERROR "Failed to generate QMLUI HW files:\n${QMLUI_ERROR}")
-            endif()
-            message(STATUS "${QMLUI_OUTPUT}")
-        endforeach()
-    endif()
 else ()
     message(FATAL_ERROR "Build target info missing.\nHW_NAME: ${HW_NAME}\nHW_TARGET: ${HW_TARGET}\nHW_FILE: ${HW_FILE_NAME}") 
 endif()
@@ -161,9 +119,6 @@ else()
     set(sdkconfig_path "${CMAKE_SOURCE_DIR}/sdkconfig")
 endif()
 set(sdkconfig_board_key "${HW_NAME}\n${HW_TARGET}\n")
-if(HW_NO_WIFI OR HW_NO_BLE)
-    string(APPEND sdkconfig_board_key "HW_NO_WIFI=${HW_NO_WIFI}\nHW_NO_BLE=${HW_NO_BLE}\n")
-endif()
 set(sdkconfig_owner_file "${sdkconfig_path}.board")
 set(sdkconfig_previous_board "")
 if(EXISTS "${sdkconfig_owner_file}")
@@ -172,44 +127,6 @@ endif()
 if(NOT "${sdkconfig_previous_board}" STREQUAL "${sdkconfig_board_key}" AND EXISTS "${sdkconfig_path}")
     message(STATUS "Hardware changed or sdkconfig ownership unknown; regenerating ${sdkconfig_path} from ${SDKCONFIG_DEFAULTS}")
     file(REMOVE "${sdkconfig_path}")
-endif()
-
-set(ENV{HW_NO_WIFI} "${HW_NO_WIFI}")
-set(radio_disabled_symbols "")
-if(HW_NO_WIFI)
-    list(APPEND radio_disabled_symbols ESP_WIFI_ENABLED ESP_HOST_WIFI_ENABLED ESP_WIFI_REMOTE_ENABLED)
-    if(HW_IDF_TARGET STREQUAL "esp32p4")
-        list(APPEND radio_disabled_symbols ESP_HOSTED_HOST_FEAT_WIFI)
-    endif()
-endif()
-if(HW_NO_BLE)
-    list(APPEND radio_disabled_symbols BT_ENABLED)
-    if(HW_IDF_TARGET STREQUAL "esp32p4")
-        list(APPEND radio_disabled_symbols ESP_HOSTED_HOST_FEAT_BT)
-    endif()
-endif()
-if(HW_NO_WIFI AND HW_NO_BLE AND HW_IDF_TARGET STREQUAL "esp32p4")
-    list(APPEND radio_disabled_symbols ESP_HOSTED)
-endif()
-
-if(radio_disabled_symbols)
-    set(radio_defaults "")
-    foreach(symbol IN LISTS radio_disabled_symbols)
-        string(APPEND radio_defaults "CONFIG_${symbol}=n\n")
-    endforeach()
-    set(radio_defaults_path "${CMAKE_BINARY_DIR}/sdkconfig.hw_radios")
-    file(CONFIGURE OUTPUT "${radio_defaults_path}" CONTENT "${radio_defaults}" @ONLY)
-    list(APPEND SDKCONFIG_DEFAULTS "${radio_defaults_path}")
-
-    if(EXISTS "${sdkconfig_path}")
-        file(READ "${sdkconfig_path}" radio_sdkconfig)
-        foreach(symbol IN LISTS radio_disabled_symbols)
-            string(REGEX REPLACE "(^|\n)(CONFIG_${symbol}=[^\n]*|# CONFIG_${symbol} is not set)(\n|$)" "\n" radio_sdkconfig "${radio_sdkconfig}")
-        endforeach()
-        string(REGEX REPLACE "\n+$" "" radio_sdkconfig "${radio_sdkconfig}")
-        file(WRITE "${sdkconfig_path}" "${radio_sdkconfig}\n${radio_defaults}")
-    endif()
-    message(STATUS "Hardware radio exclusions: Wi-Fi=${HW_NO_WIFI}, BLE=${HW_NO_BLE}")
 endif()
 
 # Include ESP-IDF project cmake
@@ -221,61 +138,9 @@ get_filename_component(ProjectId ${CMAKE_CURRENT_LIST_DIR} NAME)
 string(REPLACE " " "_" ProjectId ${ProjectId})
 project(${ProjectId})
 
-idf_build_get_property(config_env_path CONFIG_ENV_PATH)
-file(READ "${config_env_path}" config_env)
-string(JSON config_env SET "${config_env}" HW_NO_WIFI "\"${HW_NO_WIFI}\"")
-file(CONFIGURE OUTPUT "${config_env_path}" CONTENT "${config_env}\n" @ONLY)
-
-if(HW_NO_WIFI)
-    if(CONFIG_SOC_WIFI_SUPPORTED)
-        idf_component_get_property(wifi_lib esp_wifi COMPONENT_LIB)
-        get_target_property(wifi_sources ${wifi_lib} SOURCES)
-        list(FILTER wifi_sources EXCLUDE REGEX "/remote/")
-        set_property(TARGET ${wifi_lib} PROPERTY SOURCES "${wifi_sources}")
-    endif()
-    if(CONFIG_ESP_WIFI_ENABLED OR CONFIG_ESP_HOST_WIFI_ENABLED OR CONFIG_ESP_WIFI_REMOTE_ENABLED)
-        message(FATAL_ERROR "HW_NO_WIFI requires all Wi-Fi drivers to be disabled")
-    endif()
-endif()
-if(HW_NO_BLE AND CONFIG_BT_ENABLED)
-    message(FATAL_ERROR "HW_NO_BLE requires CONFIG_BT_ENABLED=n")
-endif()
-
 file(WRITE "${sdkconfig_owner_file}" "${sdkconfig_board_key}")
 
-# Fixed-address section for the native library C interface table. The address
-# is target-specific and must match VESC_IF in main/c_libs/vesc_c_if.h.
-idf_build_get_property(LIBIF_IDF_TARGET IDF_TARGET)
-set(LIBIF_LD "${CMAKE_CURRENT_SOURCE_DIR}/main/linker_libif_${LIBIF_IDF_TARGET}.ld")
-if(NOT EXISTS ${LIBIF_LD})
-    message(FATAL_ERROR "No native lib interface linker script for target ${LIBIF_IDF_TARGET} (expected ${LIBIF_LD})")
-endif()
-target_link_libraries(${PROJECT_NAME}.elf PRIVATE "-T${LIBIF_LD}")
-set_property(TARGET ${PROJECT_NAME}.elf APPEND PROPERTY LINK_DEPENDS ${LIBIF_LD})
-
-# Fail the build if the built-in lispBM extensions exceed EXTENSION_STORAGE_SIZE.
-idf_build_get_property(lbm_ext_python PYTHON)
-idf_component_get_property(lbm_ext_main_lib main COMPONENT_LIB)
-set(lbm_ext_stamp "${CMAKE_BINARY_DIR}/lbm_ext_check.stamp")
-add_custom_command(
-    OUTPUT "${lbm_ext_stamp}"
-    COMMAND "${lbm_ext_python}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_lbm_extensions.py"
-        --compile-commands "${CMAKE_BINARY_DIR}/compile_commands.json"
-        --source-dir "${CMAKE_CURRENT_SOURCE_DIR}/main"
-        --stamp "${lbm_ext_stamp}"
-        --cache "${CMAKE_BINARY_DIR}/lbm_ext_check.cache.json"
-    DEPENDS "$<TARGET_FILE:${lbm_ext_main_lib}>"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_lbm_extensions.py"
-        "${CMAKE_BINARY_DIR}/compile_commands.json"
-    COMMENT "Checking lispBM extension table capacity"
-    VERBATIM)
-add_custom_target(lbm_ext_check DEPENDS "${lbm_ext_stamp}")
-add_dependencies(lbm_ext_check ${lbm_ext_main_lib})
-add_dependencies(${PROJECT_NAME}.elf lbm_ext_check)
-
 include(cmake/git_rev_parse.cmake)
-
-git_describe(GIT_COMMIT_HASH ".")
 
 if(DEFINED ENV{GIT_COMMIT_HASH})
     set(GIT_COMMIT_HASH $ENV{GIT_COMMIT_HASH})

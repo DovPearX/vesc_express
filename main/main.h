@@ -28,24 +28,7 @@
 typedef struct {
 	int controller_id;
 	CAN_BAUD can_baud_rate;
-	int can_status_rate_hz;
-	WIFI_MODE wifi_mode;
-	char wifi_sta_ssid[36];
-	char wifi_sta_key[26];
-	char wifi_ap_ssid[36];
-	char wifi_ap_key[26];
-	bool use_tcp_local;
-	bool use_tcp_hub;
-	char tcp_hub_url[36];
-	uint16_t tcp_hub_port;
-	char tcp_hub_id[26];
-	char tcp_hub_pass[26];
-	BLE_MODE ble_mode;
-	BLE_MODE_LBM ble_mode_lbm;
-	char ble_name[9];
-	uint32_t ble_pin;
-	uint32_t ble_service_capacity;
-	uint32_t ble_chr_descr_capacity;
+	int reserved; // Retains the layout of stored configurations.
 } main_config_t;
 #endif
 
@@ -70,8 +53,7 @@ typedef struct {
 	uint32_t config_init_flag;
 	main_config_t config;
 
-	// Pad just in case as flash_helper_write_data rounds length down to
-	// closest multiple of 8.
+	// Retained for compatibility with stored backups.
 	volatile uint32_t pad1;
 	volatile uint32_t pad2;
 } backup_data;

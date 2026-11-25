@@ -21,17 +21,11 @@
 #include "terminal.h"
 #include "commands.h"
 #include "comm_can.h"
-#include "comm_ble.h"
-#include "comm_wifi.h"
-#include "ble/custom_ble.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
 #include <ctype.h>
 
-#if CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_WIFI_REMOTE_ENABLED
-#include "esp_wifi.h"
-#endif
 #include "nvs_flash.h"
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
@@ -171,57 +165,14 @@ void terminal_process_string(char *str) {
 		commands_printf("mmap inst free    : %d", spi_flash_mmap_get_free_pages(SPI_FLASH_MMAP_INST));
 
 		commands_printf(" ");
-	} else if (strcmp(argv[0], "can_devs") == 0) {
-		commands_printf("CAN devices seen on the bus the past second:\n");
-		for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-			can_status_msg *msg = comm_can_get_status_msg_index(i);
-
-			if (msg->id >= 0 && UTILS_AGE_S(msg->rx_time) < 1.0) {
-				commands_printf("ID                   : %i", msg->id);
-				commands_printf("RX Time              : %i", msg->rx_time);
-				commands_printf("Age (milliseconds)   : %.2f", (double)(UTILS_AGE_S(msg->rx_time) * 1000.0));
-				commands_printf("RPM                  : %.2f", (double)msg->rpm);
-				commands_printf("Current              : %.2f", (double)msg->current);
-				commands_printf("Duty                 : %.2f\n", (double)msg->duty);
-			}
-		}
 	} else if (strcmp(argv[0], "hw_status") == 0) {
 		commands_printf("Firmware          : %d.%d", FW_VERSION_MAJOR, FW_VERSION_MINOR);
 		commands_printf("Hardware          : %s", HW_NAME);
 
-		commands_printf("BLE MTU           : %d", comm_ble_mtu_now());
-		commands_printf("BLE Connected     : %d", comm_ble_is_connected());
-		commands_printf("Custom BLE Started: %d", custom_ble_started());
 		commands_printf("CAN RX Recoveries : %d", comm_can_get_rx_recovery_cnt());
 #if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32S31)
 		commands_printf("CAN2 RX Recoveries: %d", comm_can2_get_rx_recovery_cnt());
 #endif
-
-		esp_ip4_addr_t ip = comm_wifi_get_ip();
-		esp_ip4_addr_t ip_client = comm_wifi_get_ip_client();
-
-		commands_printf("WIFI IP           : " IPSTR, IP2STR(&ip));
-		commands_printf("WIFI Connected    : %d", comm_wifi_is_connected());
-		commands_printf("WIFI Connecting   : %d", comm_wifi_is_connecting());
-		commands_printf("WIFI Client IP    : " IPSTR, IP2STR(&ip_client));
-		commands_printf("WIFI Client Con   : %d", comm_wifi_is_client_connected());
-
-		uint8_t ch_primary;
-		#if CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_WIFI_REMOTE_ENABLED
-		wifi_second_chan_t ch_second;
-		esp_err_t ch_res = esp_wifi_get_channel(&ch_primary, &ch_second);
-
-		if (ch_res == ESP_OK) {
-			commands_printf("WIFI Channel      : %d", ch_primary);
-		} else if (ch_res == ESP_ERR_WIFI_NOT_INIT) {
-			commands_printf("WIFI Channel      : ESP_ERR_WIFI_NOT_INIT");
-		} else {
-			commands_printf("WIFI Channel      : error %d", ch_res);
-		}
-		#else
-		(void)ch_primary;
-		commands_printf("WIFI Channel      : unavailable");
-		#endif
 
 		const esp_partition_t *running = esp_ota_get_running_partition();
 		if (running != NULL) {
@@ -290,9 +241,6 @@ void terminal_process_string(char *str) {
 		commands_printf("mem");
 		commands_printf("  Print memory usage.");
 
-		commands_printf("can_devs");
-		commands_printf("  Print all CAN devices seen on the bus the past second.");
-
 		commands_printf("hw_status");
 		commands_printf("  Print some hardware status information.");
 
@@ -306,7 +254,7 @@ void terminal_process_string(char *str) {
 		commands_printf("  Prints how many seconds have passed since boot.");
 		
 		commands_printf("store_log_context");
-		commands_printf("  Remember the current device and connection method (i.e. BLE, WiFi, USB, etc),\n"
+		commands_printf("  Remember the current device and connection method,\n"
 		                "  and send future debug logs to it. Only usefull while developing the firmware."
 #if !LOGS_ENABLED
                         "\n  (Disabled for this firmware)"

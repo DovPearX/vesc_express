@@ -20,114 +20,17 @@
 
 #include "utils.h"
 #include "soc/gpio_pins.h"
-#include "esp_vfs_fat.h"
-#include "sdmmc_cmd.h"
-#include "esp_vfs.h"
-#include "esp_memory_utils.h"
+#include "soc/soc_caps.h"
 
 #include <sys/time.h>
-#include <dirent.h>
-#include <string.h>
 
 // Global variables
 char *string_pin_invalid = "Invalid pin";
-
-int32_t utils_ms_today(void) {
-	struct timeval tv;
-	gettimeofday(&tv, NULL);
-	return ((tv.tv_sec % 86400) * 1000 + tv.tv_usec / 1000);
-}
 
 int64_t utils_ms_tot(void) {
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	return ((int64_t)tv.tv_sec * (int64_t)1000000 + (int64_t)tv.tv_usec) / (int64_t)1000.0;
-}
-
-void utils_byte_to_binary(int x, char *b) {
-	b[0] = '\0';
-
-	int z;
-	for (z = 128; z > 0; z >>= 1) {
-		strcat(b, ((x & z) == z) ? "1" : "0");
-	}
-}
-
-void utils_rotate_vector3(float *input, float *rotation, float *output, bool reverse) {
-	float s1, c1, s2, c2, s3, c3;
-
-	if (rotation[2] != 0.0) {
-		s1 = sinf(rotation[2]);
-		c1 = cosf(rotation[2]);
-	} else {
-		s1 = 0.0;
-		c1 = 1.0;
-	}
-
-	if (rotation[1] != 0.0) {
-		s2 = sinf(rotation[1]);
-		c2 = cosf(rotation[1]);
-	} else {
-		s2 = 0.0;
-		c2 = 1.0;
-	}
-
-	if (rotation[0] != 0.0) {
-		s3 = sinf(rotation[0]);
-		c3 = cosf(rotation[0]);
-	} else {
-		s3 = 0.0;
-		c3 = 1.0;
-	}
-
-	float m11 = c1 * c2;	float m12 = c1 * s2 * s3 - c3 * s1;	float m13 = s1 * s3 + c1 * c3 * s2;
-	float m21 = c2 * s1;	float m22 = c1 * c3 + s1 * s2 * s3;	float m23 = c3 * s1 * s2 - c1 * s3;
-	float m31 = -s2; 		float m32 = c2 * s3;				float m33 = c2 * c3;
-
-	if (reverse) {
-		output[0] = input[0] * m11 + input[1] * m21 + input[2] * m31;
-		output[1] = input[0] * m12 + input[1] * m22 + input[2] * m32;
-		output[2] = input[0] * m13 + input[1] * m23 + input[2] * m33;
-	} else {
-		output[0] = input[0] * m11 + input[1] * m12 + input[2] * m13;
-		output[1] = input[0] * m21 + input[1] * m22 + input[2] * m23;
-		output[2] = input[0] * m31 + input[1] * m32 + input[2] * m33;
-	}
-}
-
-bool utils_rmtree(const char *path) {
-	struct stat stat_path;
-	DIR *dir;
-
-	stat(path, &stat_path);
-
-	if (S_ISDIR(stat_path.st_mode) == 0) {
-		return unlink(path) == 0;
-	}
-
-	if ((dir = opendir(path)) == NULL) {
-		return false;
-	}
-
-	size_t path_len = strlen(path);
-
-	struct dirent *entry;
-	while ((entry = readdir(dir)) != NULL) {
-		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
-			continue;
-		}
-		char *path_full = malloc(path_len + strlen(entry->d_name) + 2);
-		strcpy(path_full, path);
-		strcat(path_full, "/");
-		strcat(path_full, entry->d_name);
-		utils_rmtree(path_full);
-		free(path_full);
-	}
-
-	int res = rmdir(path);
-	closedir(dir);
-
-	return res == 0;
 }
 
 float utils_throttle_curve(float val, float curve_acc, float curve_brake, int mode) {
@@ -185,18 +88,9 @@ float utils_throttle_curve(float val, float curve_acc, float curve_brake, int mo
 	return ret;
 }
 
-const char *utils_bool_to_str(bool value) {
-	return value ? "true" : "false";
-}
-
 bool utils_gpio_is_valid(int pin) {
 	if (pin < 0 || pin >= SOC_GPIO_PIN_COUNT) {
 		return false;
 	}
 	return (SOC_GPIO_VALID_GPIO_MASK >> pin) & 1;
-}
-
-// True if the pointer is in an executable memory region (IRAM/IROM). Used to validate function pointers handed over by native libs
-bool utils_is_func_valid(void *func) {
-	return esp_ptr_executable(func);
 }

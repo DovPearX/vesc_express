@@ -1,1 +1,0 @@
-#include "hw_seeed_esp32c3.h"

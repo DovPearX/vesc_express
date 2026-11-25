@@ -33,24 +33,10 @@
 #include "crc.h"
 #include "packet.h"
 #include "commands.h"
-#include "nmea.h"
-#include "ublox.h"
-#include "lispif.h"
-#include "bms.h"
 #include "utils.h"
 #include <string.h>
 
 // Status messages
-static can_status_msg stat_msgs[CAN_STATUS_MSGS_TO_STORE];
-static can_status_msg_2 stat_msgs_2[CAN_STATUS_MSGS_TO_STORE];
-static can_status_msg_3 stat_msgs_3[CAN_STATUS_MSGS_TO_STORE];
-static can_status_msg_4 stat_msgs_4[CAN_STATUS_MSGS_TO_STORE];
-static can_status_msg_5 stat_msgs_5[CAN_STATUS_MSGS_TO_STORE];
-static can_status_msg_6 stat_msgs_6[CAN_STATUS_MSGS_TO_STORE];
-static io_board_adc_values io_board_adc_1_4[CAN_STATUS_MSGS_TO_STORE];
-static io_board_adc_values io_board_adc_5_8[CAN_STATUS_MSGS_TO_STORE];
-static io_board_digial_inputs io_board_digital_in[CAN_STATUS_MSGS_TO_STORE];
-static psw_status psw_stat[CAN_STATUS_MSGS_TO_STORE];
 
 #define RX_BUFFER_NUM				3
 #define RX_BUFFER_SIZE				PACKET_MAX_PL_LEN
@@ -92,12 +78,9 @@ static DRAM_ATTR can_state_t can2_state;
 static volatile bool init_done = false;
 static volatile bool sem_init_done = false;
 static volatile bool proc_started = false;
-static volatile bool stop_threads = false;
-static volatile bool status_running = false;
 
 static SemaphoreHandle_t ping_sem;
 static SemaphoreHandle_t proc_sem;
-static SemaphoreHandle_t status_sem;
 static volatile HW_TYPE ping_hw_last = HW_TYPE_VESC;
 
 typedef struct {
@@ -116,9 +99,6 @@ typedef struct {
 static can_rx_state_t can_rx_state;
 
 static volatile bool use_vesc_decoder = true;
-
-static bool (*sid_callback)(uint32_t id, uint8_t *data, uint8_t len) = 0;
-static bool (*eid_callback)(uint32_t id, uint8_t *data, uint8_t len) = 0;
 
 #if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32S31)
 static volatile bool can2_use_vesc_dec = true;
@@ -358,248 +338,6 @@ static void decode_msg(const can_decoder_t *dec, can_message_t *msg, bool is_rep
 	// The packets below are addressed to all devices, mainly containing status information.
 
 	switch (cmd) {
-	case CAN_PACKET_STATUS:
-		for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-			can_status_msg *stat_tmp = &stat_msgs[i];
-			if (stat_tmp->id == id || stat_tmp->id == -1) {
-				ind = 0;
-				stat_tmp->id = id;
-				stat_tmp->rx_time = xTaskGetTickCount();
-				stat_tmp->rpm = (float)buffer_get_int32(data8, &ind);
-				stat_tmp->current = (float)buffer_get_int16(data8, &ind) / 10.0;
-				stat_tmp->duty = (float)buffer_get_int16(data8, &ind) / 1000.0;
-				break;
-			}
-		}
-		break;
-
-	case CAN_PACKET_STATUS_2:
-		for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-			can_status_msg_2 *stat_tmp_2 = &stat_msgs_2[i];
-			if (stat_tmp_2->id == id || stat_tmp_2->id == -1) {
-				ind = 0;
-				stat_tmp_2->id = id;
-				stat_tmp_2->rx_time = xTaskGetTickCount();
-				stat_tmp_2->amp_hours = (float)buffer_get_int32(data8, &ind) / 1e4;
-				stat_tmp_2->amp_hours_charged = (float)buffer_get_int32(data8, &ind) / 1e4;
-				break;
-			}
-		}
-		break;
-
-	case CAN_PACKET_STATUS_3:
-		for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-			can_status_msg_3 *stat_tmp_3 = &stat_msgs_3[i];
-			if (stat_tmp_3->id == id || stat_tmp_3->id == -1) {
-				ind = 0;
-				stat_tmp_3->id = id;
-				stat_tmp_3->rx_time = xTaskGetTickCount();
-				stat_tmp_3->watt_hours = (float)buffer_get_int32(data8, &ind) / 1e4;
-				stat_tmp_3->watt_hours_charged = (float)buffer_get_int32(data8, &ind) / 1e4;
-				break;
-			}
-		}
-		break;
-
-	case CAN_PACKET_STATUS_4:
-		for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-			can_status_msg_4 *stat_tmp_4 = &stat_msgs_4[i];
-			if (stat_tmp_4->id == id || stat_tmp_4->id == -1) {
-				ind = 0;
-				stat_tmp_4->id = id;
-				stat_tmp_4->rx_time = xTaskGetTickCount();
-				stat_tmp_4->temp_fet = (float)buffer_get_int16(data8, &ind) / 10.0;
-				stat_tmp_4->temp_motor = (float)buffer_get_int16(data8, &ind) / 10.0;
-				stat_tmp_4->current_in = (float)buffer_get_int16(data8, &ind) / 10.0;
-				stat_tmp_4->pid_pos_now = (float)buffer_get_int16(data8, &ind) / 50.0;
-				break;
-			}
-		}
-		break;
-
-	case CAN_PACKET_STATUS_5:
-		for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-			can_status_msg_5 *stat_tmp_5 = &stat_msgs_5[i];
-			if (stat_tmp_5->id == id || stat_tmp_5->id == -1) {
-				ind = 0;
-				stat_tmp_5->id = id;
-				stat_tmp_5->rx_time = xTaskGetTickCount();
-				stat_tmp_5->tacho_value = buffer_get_int32(data8, &ind);
-				stat_tmp_5->v_in = (float)buffer_get_int16(data8, &ind) / 1e1;
-				break;
-			}
-		}
-		break;
-
-	case CAN_PACKET_STATUS_6:
-		for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-			can_status_msg_6 *stat_tmp_6 = &stat_msgs_6[i];
-			if (stat_tmp_6->id == id || stat_tmp_6->id == -1) {
-				ind = 0;
-				stat_tmp_6->id = id;
-				stat_tmp_6->rx_time = xTaskGetTickCount();
-				stat_tmp_6->adc_1 = buffer_get_float16(data8, 1e3, &ind);
-				stat_tmp_6->adc_2 = buffer_get_float16(data8, 1e3, &ind);
-				stat_tmp_6->adc_3 = buffer_get_float16(data8, 1e3, &ind);
-				stat_tmp_6->ppm = buffer_get_float16(data8, 1e3, &ind);
-				break;
-			}
-		}
-		break;
-
-	case CAN_PACKET_IO_BOARD_ADC_1_TO_4:
-		for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-			io_board_adc_values *msg = &io_board_adc_1_4[i];
-			if (msg->id == id || msg->id == -1) {
-				ind = 0;
-				msg->id = id;
-				msg->rx_time = xTaskGetTickCount();
-				ind = 0;
-				int j = 0;
-				while (ind < len) {
-					msg->adc_voltages[j++] = buffer_get_float16(data8, 1e2, &ind);
-				}
-				break;
-			}
-		}
-		break;
-
-	case CAN_PACKET_IO_BOARD_ADC_5_TO_8:
-		for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-			io_board_adc_values *msg = &io_board_adc_5_8[i];
-			if (msg->id == id || msg->id == -1) {
-				ind = 0;
-				msg->id = id;
-				msg->rx_time = xTaskGetTickCount();
-				ind = 0;
-				int j = 0;
-				while (ind < len) {
-					msg->adc_voltages[j++] = buffer_get_float16(data8, 1e2, &ind);
-				}
-				break;
-			}
-		}
-		break;
-
-	case CAN_PACKET_IO_BOARD_DIGITAL_IN:
-		for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-			io_board_digial_inputs *msg = &io_board_digital_in[i];
-			if (msg->id == id || msg->id == -1) {
-				ind = 0;
-				msg->id = id;
-				msg->rx_time = xTaskGetTickCount();
-				msg->inputs = 0;
-				ind = 0;
-				while (ind < len) {
-					msg->inputs |= (uint64_t)data8[ind] << (ind * 8);
-					ind++;
-				}
-				break;
-			}
-		}
-		break;
-
-	case CAN_PACKET_PSW_STAT: {
-		for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-			psw_status *msg = &psw_stat[i];
-			if (msg->id == id || msg->id == -1) {
-				ind = 0;
-				msg->id = id;
-				msg->rx_time = xTaskGetTickCount();
-
-				msg->v_in = buffer_get_float16(data8, 10.0, &ind);
-				msg->v_out = buffer_get_float16(data8, 10.0, &ind);
-				msg->temp = buffer_get_float16(data8, 10.0, &ind);
-				msg->is_out_on = (data8[ind] >> 0) & 1;
-				msg->is_pch_on = (data8[ind] >> 1) & 1;
-				msg->is_dsc_on = (data8[ind] >> 2) & 1;
-				ind++;
-				break;
-			}
-		}
-	} break;
-
-	case CAN_PACKET_GNSS_TIME: {
-		if (ublox_init_ok()) {
-			break;
-		}
-
-		nmea_state_t *s = nmea_get_state();
-
-		s->gga.ms_today = buffer_get_int32(data8, &ind);
-		s->rmc.yy = buffer_get_int16(data8, &ind);
-		s->rmc.mo = data8[ind++];
-		s->rmc.dd = data8[ind++];
-
-		int ms = s->gga.ms_today % 1000;
-		int ss = (s->gga.ms_today / 1000) % 60;
-		int mm = (s->gga.ms_today / 1000 / 60) % 60;
-		int hh = (s->gga.ms_today / 1000 / 60 / 60) % 24;
-
-		s->rmc.hh = hh;
-		s->rmc.mm = mm;
-		s->rmc.ss = ss;
-		s->rmc.ms = ms;
-
-		s->gga_cnt++;
-		s->rmc_cnt++;
-		s->gga.update_time = xTaskGetTickCount();
-		s->rmc.update_time = xTaskGetTickCount();
-	} break;
-
-	case CAN_PACKET_GNSS_LAT: {
-		if (ublox_init_ok()) {
-			break;
-		}
-
-		nmea_state_t *s = nmea_get_state();
-
-		ind = 0;
-		volatile double tmp = buffer_get_double64(data8, D(1e16), &ind);
-
-		portDISABLE_INTERRUPTS();
-		s->gga.lat = tmp;
-		portENABLE_INTERRUPTS();
-
-		s->gga_cnt++;
-		s->gga.update_time = xTaskGetTickCount();
-	} break;
-
-	case CAN_PACKET_GNSS_LON: {
-		if (ublox_init_ok()) {
-			break;
-		}
-
-		nmea_state_t *s = nmea_get_state();
-
-		ind = 0;
-		volatile double tmp = buffer_get_double64(data8, D(1e16), &ind);
-
-		portDISABLE_INTERRUPTS();
-		s->gga.lon = tmp;
-		portENABLE_INTERRUPTS();
-
-		s->gga_cnt++;
-		s->gga.update_time = xTaskGetTickCount();
-	} break;
-
-	case CAN_PACKET_GNSS_ALT_SPEED_HDOP: {
-		if (ublox_init_ok()) {
-			break;
-		}
-
-		nmea_state_t *s = nmea_get_state();
-
-		s->gga.height = buffer_get_float32_auto(data8, &ind);
-		s->rmc.speed = buffer_get_float16(data8, 1.0e2, &ind);
-		s->gga.h_dop = buffer_get_float16(data8, 1.0e2, &ind);
-
-		s->gga_cnt++;
-		s->rmc_cnt++;
-		s->gga.update_time = xTaskGetTickCount();
-		s->rmc.update_time = xTaskGetTickCount();
-	} break;
-
 	case CAN_PACKET_UPDATE_BAUD: {
 		if (rx != &can_rx_state) {
 			break;
@@ -789,27 +527,8 @@ static void process_task(void *arg) {
 		while (can_state.rx_queue && xQueueReceive(can_state.rx_queue, &rx_message, 0) == pdTRUE) {
 			can_message_t *msg = &rx_message;
 
-			lispif_process_can(msg->identifier, msg->data, msg->data_length_code, msg->extd);
-
-			// Application RX callbacks (e.g. native lib). If the callback
-			// consumes the frame, skip the built-in VESC decoding.
-			bool consumed = false;
-			if (msg->extd) {
-				if (eid_callback) {
-					consumed = eid_callback(msg->identifier, msg->data, msg->data_length_code);
-				}
-			} else {
-				if (sid_callback) {
-					consumed = sid_callback(msg->identifier, msg->data, msg->data_length_code);
-				}
-			}
-
-			if (!consumed && use_vesc_decoder) {
-				if (!bms_process_can_frame(msg->identifier, msg->data, msg->data_length_code, msg->extd)) {
-					if (msg->extd) {
-						decode_msg(&can_decoder, msg, false);
-					}
-				}
+			if (use_vesc_decoder && msg->extd) {
+				decode_msg(&can_decoder, msg, false);
 			}
 		}
 
@@ -817,103 +536,13 @@ static void process_task(void *arg) {
 		while (can2_state.rx_queue && xQueueReceive(can2_state.rx_queue, &rx_message, 0) == pdTRUE) {
 			can_message_t *m = &rx_message;
 
-			lispif_process_can2(m->identifier, m->data, m->data_length_code, m->extd);
-
-			if (can2_use_vesc_dec) {
-				if (!bms_process_can_frame(m->identifier, m->data, m->data_length_code, m->extd)) {
-					if (m->extd) {
-						decode_msg(&can2_decoder, m, false);
-					}
-				}
+			if (can2_use_vesc_dec && m->extd) {
+				decode_msg(&can2_decoder, m, false);
 			}
 		}
 #endif
 	}
 
-	vTaskDelete(NULL);
-}
-
-static void status_task(void *arg) {
-	int gga_cnt_last = 0;
-	int rmc_cnt_last = 0;
-
-	while (!stop_threads) {
-		int rate = backup.config.can_status_rate_hz;
-
-		if (rate < 1) {
-			xSemaphoreTake(status_sem, 10);
-			continue;
-		}
-
-#ifdef HW_CAN_STATUS_ADC0
-		{
-			int32_t send_index = 0;
-			uint8_t buffer[8];
-
-			buffer_append_float16(buffer, HW_CAN_STATUS_ADC0, 1e2, &send_index);
-			buffer_append_float16(buffer, HW_CAN_STATUS_ADC1, 1e2, &send_index);
-			buffer_append_float16(buffer, HW_CAN_STATUS_ADC2, 1e2, &send_index);
-			buffer_append_float16(buffer, HW_CAN_STATUS_ADC3, 1e2, &send_index);
-			comm_can_transmit_eid(backup.config.controller_id | ((uint32_t)CAN_PACKET_IO_BOARD_ADC_1_TO_4 << 8), buffer, send_index);
-		}
-#endif
-
-		{ // GNSS
-			nmea_state_t *s = nmea_get_state();
-
-			bool date_valid = true;
-			if (s->rmc.yy < 0 || s->rmc.mo < 0 || s->rmc.dd < 0 ||
-					s->rmc.hh < 0 || s->rmc.mm < 0 || s->rmc.ss < 0) {
-				date_valid = false;
-			}
-
-			bool gga_updated = false;
-			if (s->gga_cnt != gga_cnt_last) {
-				gga_updated = true;
-				gga_cnt_last = s->gga_cnt;
-			}
-
-			bool rmc_updated = false;
-			if (s->rmc_cnt != rmc_cnt_last) {
-				rmc_updated = true;
-				rmc_cnt_last = s->rmc_cnt;
-			}
-
-			if (date_valid && rmc_updated) {
-				int32_t send_index = 0;
-				uint8_t buffer[8];
-				buffer_append_int32(buffer, s->gga.ms_today, &send_index);
-				buffer_append_int16(buffer, s->rmc.yy, &send_index);
-				buffer[send_index++] = s->rmc.mo;
-				buffer[send_index++] = s->rmc.dd;
-				comm_can_transmit_eid(backup.config.controller_id | ((uint32_t)CAN_PACKET_GNSS_TIME << 8), buffer, send_index);
-			}
-
-			if (gga_updated) {
-				// Lat
-				int32_t send_index = 0;
-				uint8_t buffer[8];
-				buffer_append_double64(buffer, s->gga.lat, D(1e16), &send_index);
-				comm_can_transmit_eid(backup.config.controller_id | ((uint32_t)CAN_PACKET_GNSS_LAT << 8), buffer, send_index);
-
-				// Lon
-				send_index = 0;
-				buffer_append_double64(buffer, s->gga.lon, D(1e16), &send_index);
-				comm_can_transmit_eid(backup.config.controller_id | ((uint32_t)CAN_PACKET_GNSS_LON << 8), buffer, send_index);
-
-				// Alt, speed, hdop
-				send_index = 0;
-				buffer_append_float32_auto(buffer, s->gga.height, &send_index);
-				buffer_append_float16(buffer, s->rmc.speed, 1.0e2, &send_index);
-				buffer_append_float16(buffer, s->gga.h_dop, 1.0e2, &send_index);
-				comm_can_transmit_eid(backup.config.controller_id | ((uint32_t)CAN_PACKET_GNSS_ALT_SPEED_HDOP << 8), buffer, send_index);
-			}
-		}
-
-		xSemaphoreTake(status_sem, configTICK_RATE_HZ / rate);
-	}
-
-	status_running = false;
 	vTaskDelete(NULL);
 }
 
@@ -943,6 +572,7 @@ static uint32_t baudrate_to_bitrate(CAN_BAUD baudrate) {
 			return 75188;
 		case CAN_BAUD_100K:
 			return 100000;
+		case CAN_BAUD_500K:
 		default:
 			return 500000;
 	}
@@ -954,24 +584,8 @@ void comm_can_start(int pin_tx, int pin_rx) {
 		return;
 	}
 
-	for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-		stat_msgs[i].id = -1;
-		stat_msgs_2[i].id = -1;
-		stat_msgs_3[i].id = -1;
-		stat_msgs_4[i].id = -1;
-		stat_msgs_5[i].id = -1;
-		stat_msgs_6[i].id = -1;
-
-		io_board_adc_1_4[i].id = -1;
-		io_board_adc_5_8[i].id = -1;
-		io_board_digital_in[i].id = -1;
-
-		psw_stat[i].id = -1;
-	}
-
 	if (!sem_init_done) {
 		ping_sem = xSemaphoreCreateBinary();
-		status_sem = xSemaphoreCreateBinary();
 		sem_init_done = true;
 	}
 
@@ -988,11 +602,6 @@ void comm_can_start(int pin_tx, int pin_rx) {
 		return;
 	}
 
-	stop_threads = false;
-	status_running = true;
-
-	xTaskCreatePinnedToCore(status_task, "can_status", 1024, NULL, 7, NULL, tskNO_AFFINITY);
-
 	init_done = true;
 }
 
@@ -1004,12 +613,6 @@ void comm_can_stop(void) {
 	xSemaphoreTake(can_state.send_mutex, portMAX_DELAY);
 	init_done = false;
 	xSemaphoreGive(can_state.send_mutex);
-
-	stop_threads = true;
-	xSemaphoreGive(status_sem);
-	while (status_running) {
-		vTaskDelay(2);
-	}
 
 	xSemaphoreTake(can_state.send_mutex, portMAX_DELAY);
 	can_node_stop(&can_state);
@@ -1065,17 +668,6 @@ void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
 
 void comm_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len) {
 	can_transmit(&can_state, id, data, len, false);
-}
-
-// Set a callback for received standard-ID CAN frames. The callback returns
-// true if it consumed the frame (skipping the built-in VESC decoding).
-void comm_can_set_sid_rx_callback(bool (*p_func)(uint32_t id, uint8_t *data, uint8_t len)) {
-	sid_callback = p_func;
-}
-
-// Set a callback for received extended-ID CAN frames. See above.
-void comm_can_set_eid_rx_callback(bool (*p_func)(uint32_t id, uint8_t *data, uint8_t len)) {
-	eid_callback = p_func;
 }
 
 /**
@@ -1195,96 +787,6 @@ bool comm_can_ping(uint8_t controller_id, HW_TYPE *hw_type) {
 	return ret;
 }
 
-void comm_can_set_duty(uint8_t controller_id, float duty) {
-	int32_t send_index = 0;
-	uint8_t buffer[4];
-	buffer_append_int32(buffer, (int32_t)(duty * 100000.0), &send_index);
-	comm_can_transmit_eid(controller_id |
-			((uint32_t)CAN_PACKET_SET_DUTY << 8), buffer, send_index);
-}
-
-void comm_can_set_current(uint8_t controller_id, float current) {
-	int32_t send_index = 0;
-	uint8_t buffer[4];
-	buffer_append_int32(buffer, (int32_t)(current * 1000.0), &send_index);
-	comm_can_transmit_eid(controller_id |
-			((uint32_t)CAN_PACKET_SET_CURRENT << 8), buffer, send_index);
-}
-
-void comm_can_set_current_off_delay(uint8_t controller_id, float current, float off_delay) {
-	int32_t send_index = 0;
-	uint8_t buffer[6];
-	buffer_append_int32(buffer, (int32_t)(current * 1000.0), &send_index);
-	buffer_append_float16(buffer, off_delay, 1e3, &send_index);
-	comm_can_transmit_eid(controller_id |
-			((uint32_t)CAN_PACKET_SET_CURRENT << 8), buffer, send_index);
-}
-
-void comm_can_set_current_brake(uint8_t controller_id, float current) {
-	int32_t send_index = 0;
-	uint8_t buffer[4];
-	buffer_append_int32(buffer, (int32_t)(current * 1000.0), &send_index);
-	comm_can_transmit_eid(controller_id |
-			((uint32_t)CAN_PACKET_SET_CURRENT_BRAKE << 8), buffer, send_index);
-}
-
-void comm_can_set_rpm(uint8_t controller_id, float rpm) {
-	int32_t send_index = 0;
-	uint8_t buffer[4];
-	buffer_append_int32(buffer, (int32_t)rpm, &send_index);
-	comm_can_transmit_eid(controller_id |
-			((uint32_t)CAN_PACKET_SET_RPM << 8), buffer, send_index);
-}
-
-void comm_can_set_pos(uint8_t controller_id, float pos) {
-	int32_t send_index = 0;
-	uint8_t buffer[4];
-	buffer_append_int32(buffer, (int32_t)(pos * 1000000.0), &send_index);
-	comm_can_transmit_eid(controller_id |
-			((uint32_t)CAN_PACKET_SET_POS << 8), buffer, send_index);
-}
-
-void comm_can_set_current_rel(uint8_t controller_id, float current_rel) {
-	int32_t send_index = 0;
-	uint8_t buffer[4];
-	buffer_append_float32(buffer, current_rel, 1e5, &send_index);
-	comm_can_transmit_eid(controller_id |
-			((uint32_t)CAN_PACKET_SET_CURRENT_REL << 8), buffer, send_index);
-}
-
-void comm_can_set_current_rel_off_delay(uint8_t controller_id, float current_rel, float off_delay) {
-	int32_t send_index = 0;
-	uint8_t buffer[6];
-	buffer_append_float32(buffer, current_rel, 1e5, &send_index);
-	buffer_append_float16(buffer, off_delay, 1e3, &send_index);
-	comm_can_transmit_eid(controller_id |
-			((uint32_t)CAN_PACKET_SET_CURRENT_REL << 8), buffer, send_index);
-}
-
-void comm_can_set_current_brake_rel(uint8_t controller_id, float current_rel) {
-	int32_t send_index = 0;
-	uint8_t buffer[4];
-	buffer_append_float32(buffer, current_rel, 1e5, &send_index);
-	comm_can_transmit_eid(controller_id |
-			((uint32_t)CAN_PACKET_SET_CURRENT_BRAKE_REL << 8), buffer, send_index);
-}
-
-void comm_can_set_handbrake(uint8_t controller_id, float current) {
-	int32_t send_index = 0;
-	uint8_t buffer[4];
-	buffer_append_float32(buffer, current, 1e3, &send_index);
-	comm_can_transmit_eid(controller_id |
-			((uint32_t)CAN_PACKET_SET_CURRENT_HANDBRAKE << 8), buffer, send_index);
-}
-
-void comm_can_set_handbrake_rel(uint8_t controller_id, float current_rel) {
-	int32_t send_index = 0;
-	uint8_t buffer[4];
-	buffer_append_float32(buffer, current_rel, 1e5, &send_index);
-	comm_can_transmit_eid(controller_id |
-			((uint32_t)CAN_PACKET_SET_CURRENT_HANDBRAKE_REL << 8), buffer, send_index);
-}
-
 void comm_can_send_update_baud(int kbits, int delay_msec) {
 	int32_t send_index = 0;
 	uint8_t buffer[8];
@@ -1294,249 +796,22 @@ void comm_can_send_update_baud(int kbits, int delay_msec) {
 			((uint32_t)CAN_PACKET_UPDATE_BAUD << 8), buffer, send_index);
 }
 
-can_status_msg *comm_can_get_status_msg_index(int index) {
-	if (index < CAN_STATUS_MSGS_TO_STORE) {
-		return &stat_msgs[index];
-	} else {
-		return 0;
-	}
-}
-
-can_status_msg *comm_can_get_status_msg_id(int id) {
-	for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-		if (stat_msgs[i].id == id) {
-			return &stat_msgs[i];
-		}
-	}
-
-	return 0;
-}
-
-can_status_msg_2 *comm_can_get_status_msg_2_index(int index) {
-	if (index < CAN_STATUS_MSGS_TO_STORE) {
-		return &stat_msgs_2[index];
-	} else {
-		return 0;
-	}
-}
-
-can_status_msg_2 *comm_can_get_status_msg_2_id(int id) {
-	for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-		if (stat_msgs_2[i].id == id) {
-			return &stat_msgs_2[i];
-		}
-	}
-
-	return 0;
-}
-
-can_status_msg_3 *comm_can_get_status_msg_3_index(int index) {
-	if (index < CAN_STATUS_MSGS_TO_STORE) {
-		return &stat_msgs_3[index];
-	} else {
-		return 0;
-	}
-}
-
-can_status_msg_3 *comm_can_get_status_msg_3_id(int id) {
-	for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-		if (stat_msgs_3[i].id == id) {
-			return &stat_msgs_3[i];
-		}
-	}
-
-	return 0;
-}
-
-can_status_msg_4 *comm_can_get_status_msg_4_index(int index) {
-	if (index < CAN_STATUS_MSGS_TO_STORE) {
-		return &stat_msgs_4[index];
-	} else {
-		return 0;
-	}
-}
-
-can_status_msg_4 *comm_can_get_status_msg_4_id(int id) {
-	for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-		if (stat_msgs_4[i].id == id) {
-			return &stat_msgs_4[i];
-		}
-	}
-
-	return 0;
-}
-
-can_status_msg_5 *comm_can_get_status_msg_5_index(int index) {
-	if (index < CAN_STATUS_MSGS_TO_STORE) {
-		return &stat_msgs_5[index];
-	} else {
-		return 0;
-	}
-}
-
-can_status_msg_5 *comm_can_get_status_msg_5_id(int id) {
-	for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-		if (stat_msgs_5[i].id == id) {
-			return &stat_msgs_5[i];
-		}
-	}
-
-	return 0;
-}
-
-can_status_msg_6 *comm_can_get_status_msg_6_index(int index) {
-	if (index < CAN_STATUS_MSGS_TO_STORE) {
-		return &stat_msgs_6[index];
-	} else {
-		return 0;
-	}
-}
-
-can_status_msg_6 *comm_can_get_status_msg_6_id(int id) {
-	for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-		if (stat_msgs_6[i].id == id) {
-			return &stat_msgs_6[i];
-		}
-	}
-
-	return 0;
-}
-
-io_board_adc_values *comm_can_get_io_board_adc_1_4_index(int index) {
-	if (index < CAN_STATUS_MSGS_TO_STORE && io_board_adc_1_4[index].id >= 0) {
-		return &io_board_adc_1_4[index];
-	} else {
-		return 0;
-	}
-}
-
-io_board_adc_values *comm_can_get_io_board_adc_1_4_id(int id) {
-	if (id == 255 && io_board_adc_1_4[0].id >= 0) {
-		return &io_board_adc_1_4[0];
-	}
-
-	for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-		if (io_board_adc_1_4[i].id == id) {
-			return &io_board_adc_1_4[i];
-		}
-	}
-
-	return 0;
-}
-
-io_board_adc_values *comm_can_get_io_board_adc_5_8_index(int index) {
-	if (index < CAN_STATUS_MSGS_TO_STORE && io_board_adc_5_8[index].id >= 0) {
-		return &io_board_adc_5_8[index];
-	} else {
-		return 0;
-	}
-}
-
-io_board_adc_values *comm_can_get_io_board_adc_5_8_id(int id) {
-	if (id == 255 && io_board_adc_5_8[0].id >= 0) {
-		return &io_board_adc_5_8[0];
-	}
-
-	for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-		if (io_board_adc_5_8[i].id == id) {
-			return &io_board_adc_5_8[i];
-		}
-	}
-
-	return 0;
-}
-
-io_board_digial_inputs *comm_can_get_io_board_digital_in_index(int index) {
-	if (index < CAN_STATUS_MSGS_TO_STORE) {
-		return &io_board_digital_in[index];
-	} else {
-		return 0;
-	}
-}
-
-io_board_digial_inputs *comm_can_get_io_board_digital_in_id(int id) {
-	if (id == 255 && io_board_digital_in[0].id >= 0) {
-		return &io_board_digital_in[0];
-	}
-
-	for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-		if (io_board_digital_in[i].id == id) {
-			return &io_board_digital_in[i];
-		}
-	}
-
-	return 0;
-}
-
-void comm_can_io_board_set_output_digital(int id, int channel, bool on) {
-	int32_t send_index = 0;
-	uint8_t buffer[8];
-
-	buffer[send_index++] = channel;
-	buffer[send_index++] = 1;
-	buffer[send_index++] = on ? 1 : 0;
-
-	comm_can_transmit_eid(id | ((uint32_t)CAN_PACKET_IO_BOARD_SET_OUTPUT_DIGITAL << 8), buffer, send_index);
-}
-
-void comm_can_io_board_set_output_pwm(int id, int channel, float duty) {
-	int32_t send_index = 0;
-	uint8_t buffer[8];
-
-	buffer[send_index++] = channel;
-	buffer_append_float16(buffer, duty, 1e3, &send_index);
-
-	comm_can_transmit_eid(id | ((uint32_t)CAN_PACKET_IO_BOARD_SET_OUTPUT_PWM << 8), buffer, send_index);
-}
-
-psw_status *comm_can_get_psw_status_index(int index) {
-	if (index < CAN_STATUS_MSGS_TO_STORE) {
-		return &psw_stat[index];
-	} else {
-		return 0;
-	}
-}
-
-psw_status *comm_can_get_psw_status_id(int id) {
-	for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-		if (psw_stat[i].id == id) {
-			return &psw_stat[i];
-		}
-	}
-
-	return 0;
-}
-
-void comm_can_psw_switch(int id, bool is_on, bool plot) {
-	int32_t send_index = 0;
-	uint8_t buffer[8];
-
-	buffer[send_index++] = is_on ? 1 : 0;
-	buffer[send_index++] = plot ? 1 : 0;
-
-	comm_can_transmit_eid(id | ((uint32_t)CAN_PACKET_PSW_SWITCH << 8), buffer, send_index);
-}
-
-void comm_can_update_pid_pos_offset(int id, float angle_now, bool store) {
-	int32_t send_index = 0;
-	uint8_t buffer[8];
-
-	buffer_append_float32(buffer, angle_now, 1e4, &send_index);
-	buffer[send_index++] = store;
-
-	comm_can_transmit_eid(id | ((uint32_t)CAN_PACKET_UPDATE_PID_POS_OFFSET << 8), buffer, send_index);
-}
-
 #if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32S31)
 
-void comm_can2_start(int pin_tx, int pin_rx, int baud_kbits) {
+bool comm_can2_start(int pin_tx, int pin_rx, int baud_kbits) {
+	CAN_BAUD baud = comm_can_kbits_to_baud(baud_kbits);
+	if (baud == CAN_BAUD_INVALID) {
+		return false;
+	}
+
 	if (!proc_started) {
 		proc_sem = xSemaphoreCreateBinary();
 		xTaskCreatePinnedToCore(process_task, "can_proc", 3072, NULL, 8, NULL, tskNO_AFFINITY);
 		proc_started = true;
 	}
 	can2_init_done = can_node_start(
-		&can2_state, pin_tx, pin_rx, baudrate_to_bitrate(comm_can_kbits_to_baud(baud_kbits)));
+		&can2_state, pin_tx, pin_rx, baudrate_to_bitrate(baud));
+	return can2_init_done;
 }
 
 void comm_can2_stop(void) {
@@ -1551,10 +826,6 @@ void comm_can2_stop(void) {
 
 void comm_can2_use_vesc_decoder(bool use) {
 	can2_use_vesc_dec = use;
-}
-
-bool comm_can2_is_running(void) {
-	return can2_init_done;
 }
 
 int comm_can2_get_rx_recovery_cnt(void) {

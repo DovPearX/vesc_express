@@ -30,16 +30,10 @@
 extern char *string_pin_invalid;
 
 // Functions
-int32_t utils_ms_today(void);
 int64_t utils_ms_tot(void);
-void utils_byte_to_binary(int x, char *b);
-void utils_rotate_vector3(float *input, float *rotation, float *output, bool reverse);
-bool utils_rmtree(const char *path);
 float utils_throttle_curve(float val, float curve_acc, float curve_brake, int mode);
 
-const char *utils_bool_to_str(bool value);
 bool utils_gpio_is_valid(int pin);
-bool utils_is_func_valid(void *func);
 
 #define UTILS_AGE_S(x)		((float)(xTaskGetTickCount() - x) / ((float)portTICK_PERIOD_MS * 1000.0))
 
@@ -107,35 +101,6 @@ static inline void utils_truncate_number(float *number, float min, float max) {
 	} else if (*number < min) {
 		*number = min;
 	}
-}
-
-static inline void utils_norm_angle_rad(float *angle) {
-	while (*angle < -M_PI) { *angle += 2.0 * M_PI; }
-	while (*angle >=  M_PI) { *angle -= 2.0 * M_PI; }
-}
-
-// Translate between the flash data bus (DROM) and instruction bus (IROM)
-// mappings of the same flash page. The flash MMU maps each page at the same
-// offset on both buses, so this is a constant-offset translation. On chips
-// with a unified bus (C6, P4) both mappings are the same address.
-static inline void* utils_drom_to_irom(void* drom_addr) {
-	uintptr_t addr = (uintptr_t)drom_addr;
-#if SOC_DROM_LOW != SOC_IROM_LOW
-	if (addr >= SOC_DROM_LOW && addr < SOC_DROM_HIGH) {
-		return (void*)(addr - SOC_DROM_LOW + SOC_IROM_LOW);
-	}
-#endif
-	return (void*)addr;
-}
-
-static inline void* utils_irom_to_drom(void* irom_addr) {
-	uintptr_t addr = (uintptr_t)irom_addr;
-#if SOC_DROM_LOW != SOC_IROM_LOW
-	if (addr >= SOC_IROM_LOW && addr < SOC_IROM_HIGH) {
-		return (void*)(addr - SOC_IROM_LOW + SOC_DROM_LOW);
-	}
-#endif
-	return (void*)addr;
 }
 
 #endif /* MAIN_UTILS_H_ */
