@@ -1,0 +1,116 @@
+CCFLAGS = -Wall -Wextra -Wshadow -Wjump-misses-init -pedantic -std=c99
+
+ifndef PLATFORM
+  BUILD_DIR = build/linux-x86
+  CCFLAGS += -g -O2 -m32
+  CCFLAGS += -D_PRELUDE
+  PLATFORMSRC = platform/linux/src
+  PLATFORMINC = platform/linux/include
+  CC=gcc
+  AR=ar
+else
+  CC=${CROSS_COMPILE}gcc
+  AR=${CROSS_COMPILE}ar
+endif
+
+ifeq ($(PLATFORM),linux-x64)
+  BUILD_DIR = build/linux-x64
+  CCFLAGS += -g -O2 -DLBM64
+  CCFLAGS += -D_PRELUDE
+  PLATFORMSRC = platform/linux/src
+  PLATFORMINC = platform/linux/include
+  CC=gcc
+  AR=ar
+endif
+
+ifeq ($(PLATFORM), zynq)
+  CROSS_COMPILE = arm-none-eabi-
+  BUILD_DIR = build/zynq
+  CCFLAGS += -mcpu=cortex-a9 -mfpu=vfpv3 -mfloat-abi=hard -O2
+  CCFLAGS += -D_PRELUDE
+endif
+
+ifeq ($(PLATFORM), stm32f4)
+  CROSS_COMPILE = arm-none-eabi-
+  BUILD_DIR = build/stm32f4
+  CCFLAGS += -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 -O2
+#-fmessage-length=0 -ffunction-sections -c -MMD -MP
+  PLATFORMSRC = platform/chibios/src
+  PLATFORMINC = platform/chibios/include
+
+  CCFLAGS += -D_PRELUDE
+endif
+
+ifeq ($(PLATFORM), nrf52840)
+  CROSS_COMPILE = arm-none-eabi-
+  BUILD_DIR = build/nrf52840
+  CCFLAGS += -mcpu=cortex-m4  -mthumb -ffunction-sections -fdata-sections -mabi=aapcs -march=armv7e-m -O2
+  CCFLAGS += -D_PRELUDE
+endif
+
+ifeq ($(PLATFORM), pi) #for compiling natively on the pi
+  BUILD_DIR = build/pi
+  CCFLAGS += -g -O2 -m32
+  CCFLAGS += -D_PRELUDE
+  PLATFORMSRC = platform/linux/src
+  PLATFORMINC = platform/linux/include
+endif
+
+ifeq ($(PLATFORM), macos-arm64)
+  BUILD_DIR = build/macos-arm64
+  CCFLAGS += -g -O2 -m32
+  CCFLAGS += -D_PRELUDE
+  PLATFORMSRC = platform/linux/src
+  PLATFORMINC = platform/linux/include
+  CC=clang
+  AR=ar
+endif
+
+SOURCE_DIR = src
+EXTENSIONS = src/extensions
+
+$(shell mkdir -p ${BUILD_DIR})
+$(shell mkdir -p ${BUILD_DIR}/extensions)
+
+
+SRC = src
+OBJ = obj
+
+LISPBM := ./
+
+include $(LISPBM)/lispbm.mk
+
+#SOURCES = $(wildcard $(SOURCE_DIR)/*.c)
+#SOURCES += $(wildcard $(EXTENSIONS)/*.c)
+SOURCES = $(LISPBM_SRC)
+OBJECTS = $(patsubst $(LISPBM)/src/%.c, $(BUILD_DIR)/%.o, $(SOURCES))
+#OBJECTS = $(patsubst $(SOURCE_DIR)/%.c, $(BUILD_DIR)/%.o, $(SOURCES))
+
+#$(shell echo ${SOURCES})
+#$(shell echo ${OBJECTS})
+
+
+PLATSRCS = $(wildcard $(PLATFORMSRC)/*.c)
+PLATOBJS = $(patsubst $(PLATFORMSRC)/%.c, $(BUILD_DIR)/%.o, $(PLATSRCS))
+
+LIB = $(BUILD_DIR)/liblispbm.a
+
+all: $(OBJECTS) $(LIB)
+
+debug: CCFLAGS += -g
+debug: $(OBJECTS) $(LIB)
+
+$(LIB): $(OBJECTS)
+	$(AR) -rcs $@ $(OBJECTS)
+
+$(BUILD_DIR)/%.o: $(SOURCE_DIR)/%.c
+	$(CC) $(LISPBM_INC) -I$(PLATFORMINC) $(CCFLAGS) -c $< -o $@
+
+test:
+	cd tests && ./run_tests.sh
+
+clean:
+	rm -f ${BUILD_DIR}/*.o
+	rm -f ${BUILD_DIR}/extensions/*.o
+	rm -f ${BUILD_DIR}/*.a
+
