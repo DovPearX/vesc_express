@@ -3,3 +3,7 @@ dependencies:
   idf:
     version: '>=6.1.1,<6.2.0'
 
+  espressif/esp_tinyusb:
+    version: '3.0.1'
+    rules:
+      - if: target in [esp32p4, esp32s31]

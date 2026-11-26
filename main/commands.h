@@ -23,8 +23,14 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "datatypes.h"
 
 typedef void (*send_func_t)(unsigned char *, unsigned int);
+
+void commands_process_can_packet(unsigned char *data, unsigned int len, unsigned bus, uint8_t sender, uint8_t response_type);
+void commands_queue_can_forward(unsigned bus, unsigned char *data, unsigned int len);
+void commands_queue_can_baud(CAN_BAUD baud, int delay_ms);
+uint32_t commands_get_dropped_count(void);
 
 // Functions
 void commands_init(void);
@@ -33,8 +39,6 @@ void commands_process_packet(
 );
 void commands_send_packet(unsigned char *data, unsigned int len);
 void commands_send_packet_can_last(unsigned char *data, unsigned int len);
-send_func_t commands_get_send_func(void);
-void commands_set_send_func(send_func_t func);
 int commands_printf(const char *format, ...);
 void commands_send_app_data(unsigned char *data, unsigned int len);
 

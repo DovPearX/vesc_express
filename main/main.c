@@ -114,12 +114,15 @@ void app_main(void) {
 
 	mempools_init();
 	commands_init();
-#ifdef CAN_TX_GPIO_NUM
+#if defined(CAN_TX_GPIO_NUM) && defined(CAN_RX_GPIO_NUM)
 	comm_can_start(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM);
 #endif
 	#if SOC_USB_SERIAL_JTAG_SUPPORTED
 	comm_usb_init();
 	#endif
+#if CONFIG_TINYUSB_CDC_ENABLED
+	comm_usb_cdc_init();
+#endif
 
 	vTaskDelay(1);
 

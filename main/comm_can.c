@@ -25,6 +25,7 @@
 #include "esp_twai.h"
 #include "esp_twai_onchip.h"
 #include "esp_attr.h"
+#include "esp_log.h"
 #include "freertos/queue.h"
 #include "comm_can.h"
 #include "datatypes.h"
@@ -61,75 +62,34 @@ typedef struct {
 	QueueHandle_t rx_queue;
 	QueueHandle_t tx_free;
 	SemaphoreHandle_t send_mutex;
+	SemaphoreHandle_t packet_mutex;
 	can_tx_message_t tx_buf[TXBUF_LEN];
 	int pin_tx;
 	int pin_rx;
-	uint32_t bitrate;
-	volatile TickType_t recover_tick;
-	volatile bool recover_pending;
-	volatile int recovery_cnt;
+	bool bus_off;
+	bool recover_requested;
+	comm_can_stats_t stats;
+	SemaphoreHandle_t ping_sem;
+	HW_TYPE ping_hw;
 } can_state_t;
 
-static DRAM_ATTR can_state_t can_state;
-#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32S31)
-static DRAM_ATTR can_state_t can2_state;
-#endif
+static DRAM_ATTR can_state_t buses[SOC_TWAI_CONTROLLER_NUM];
 
-static volatile bool init_done = false;
-static volatile bool sem_init_done = false;
-static volatile bool proc_started = false;
-
-static SemaphoreHandle_t ping_sem;
-static SemaphoreHandle_t proc_sem;
-static volatile HW_TYPE ping_hw_last = HW_TYPE_VESC;
+static volatile bool init_done;
+static TaskHandle_t can_worker;
+static portMUX_TYPE stats_lock = portMUX_INITIALIZER_UNLOCKED;
 
 typedef struct {
 	uint8_t buffer[RX_BUFFER_NUM][RX_BUFFER_SIZE];
 	int offset[RX_BUFFER_NUM];
-	volatile unsigned int last_id;
-	volatile unsigned int response_type;
 } can_rx_state_t;
 
-typedef struct {
-	can_rx_state_t *rx;
-	void (*reply)(unsigned char *data, unsigned int len);
-	void (*transmit)(uint32_t id, const uint8_t *data, uint8_t len);
-} can_decoder_t;
+static can_rx_state_t rx_states[SOC_TWAI_CONTROLLER_NUM];
+static bool decoder_disabled[SOC_TWAI_CONTROLLER_NUM];
+static bool can_transmit(can_state_t *state, uint32_t id, const uint8_t *data, uint8_t len, bool ext, TickType_t wait);
 
-static can_rx_state_t can_rx_state;
-
-static volatile bool use_vesc_decoder = true;
-
-#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32S31)
-static volatile bool can2_use_vesc_dec = true;
-static volatile bool can2_init_done = false;
-static can_rx_state_t can2_rx_state;
-
-static void send_packet_wrapper_can2(unsigned char *data, unsigned int len) {
-	comm_can2_send_buffer(can2_rx_state.last_id, data, len, can2_rx_state.response_type);
-}
-#endif
-
-static void send_packet_wrapper(unsigned char *data, unsigned int len) {
-	comm_can_send_buffer(can_rx_state.last_id, data, len, can_rx_state.response_type);
-}
-
-static const can_decoder_t can_decoder = {
-	.rx = &can_rx_state,
-	.reply = send_packet_wrapper,
-	.transmit = comm_can_transmit_eid,
-};
-
-#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32S31)
-static const can_decoder_t can2_decoder = {
-	.rx = &can2_rx_state,
-	.reply = send_packet_wrapper_can2,
-	.transmit = comm_can2_transmit_eid,
-};
-#endif
-
-static void decode_msg(const can_decoder_t *dec, can_message_t *msg, bool is_replaced) {
-	can_rx_state_t *rx = dec->rx;
+static void decode_msg(unsigned bus, can_message_t *msg, bool is_replaced) {
+	can_rx_state_t *rx = &rx_states[bus];
 	uint8_t *data8 = msg->data;
 	int len = msg->data_length_code;
 	int32_t ind = 0;
@@ -143,6 +103,9 @@ static void decode_msg(const can_decoder_t *dec, can_message_t *msg, bool is_rep
 	if (id == 255 || id == backup.config.controller_id) {
 		switch (cmd) {
 		case CAN_PACKET_FILL_RX_BUFFER: {
+			if (len < 2) {
+				break;
+			}
 			int buf_ind = -1;
 			int offset = data8[0];
 			data8++;
@@ -168,6 +131,9 @@ static void decode_msg(const can_decoder_t *dec, can_message_t *msg, bool is_rep
 		} break;
 
 		case CAN_PACKET_FILL_RX_BUFFER_LONG: {
+			if (len < 3) {
+				break;
+			}
 			int buf_ind = -1;
 			int offset = (int)data8[0] << 8;
 			offset |= data8[1];
@@ -196,19 +162,12 @@ static void decode_msg(const can_decoder_t *dec, can_message_t *msg, bool is_rep
 		} break;
 
 		case CAN_PACKET_PROCESS_RX_BUFFER: {
+			if (len < 6) {
+				break;
+			}
 			ind = 0;
 			unsigned int last_id = data8[ind++];
 			commands_send = data8[ind++];
-
-			if (commands_send == 0 || commands_send == 3) {
-				rx->last_id = last_id;
-			}
-
-			if (commands_send == 3) {
-				rx->response_type = 0;
-			} else {
-				rx->response_type = 1;
-			}
 
 			int rxbuf_len = (int)data8[ind++] << 8;
 			rxbuf_len |= (int)data8[ind++];
@@ -255,13 +214,13 @@ static void decode_msg(const can_decoder_t *dec, can_message_t *msg, bool is_rep
 				switch (commands_send) {
 				case 0:
 				case 3:
-					commands_process_packet(rx->buffer[buf_ind], rxbuf_len, dec->reply);
+					commands_process_can_packet(rx->buffer[buf_ind], rxbuf_len, bus, last_id, commands_send == 3 ? 0 : 1);
 					break;
 				case 1:
-					commands_send_packet_can_last(rx->buffer[buf_ind], rxbuf_len);
+					commands_queue_can_forward(bus, rx->buffer[buf_ind], rxbuf_len);
 					break;
 				case 2:
-					commands_process_packet(rx->buffer[buf_ind], rxbuf_len, 0);
+					commands_process_can_packet(rx->buffer[buf_ind], rxbuf_len, bus, last_id, 2);
 					break;
 				default:
 					break;
@@ -270,19 +229,12 @@ static void decode_msg(const can_decoder_t *dec, can_message_t *msg, bool is_rep
 		} break;
 
 		case CAN_PACKET_PROCESS_SHORT_BUFFER:
+			if (len < 3) {
+				break;
+			}
 			ind = 0;
 			unsigned int last_id = data8[ind++];
 			commands_send = data8[ind++];
-
-			if (commands_send == 0 || commands_send == 3) {
-				rx->last_id = last_id;
-			}
-
-			if (commands_send == 3) {
-				rx->response_type = 0;
-			} else {
-				rx->response_type = 1;
-			}
 
 			if (is_replaced) {
 				if (data8[ind] == COMM_JUMP_TO_BOOTLOADER ||
@@ -297,41 +249,38 @@ static void decode_msg(const can_decoder_t *dec, can_message_t *msg, bool is_rep
 			switch (commands_send) {
 			case 0:
 			case 3:
-				commands_process_packet(data8 + ind, len - ind, dec->reply);
+				commands_process_can_packet(data8 + ind, len - ind, bus, last_id, commands_send == 3 ? 0 : 1);
 				break;
 			case 1:
-				commands_send_packet_can_last(data8 + ind, len - ind);
+				commands_queue_can_forward(bus, data8 + ind, len - ind);
 				break;
 			case 2:
-				commands_process_packet(data8 + ind, len - ind, 0);
+				commands_process_can_packet(data8 + ind, len - ind, bus, last_id, 2);
 				break;
 			default:
 				break;
 			}
 			break;
 
-			case CAN_PACKET_PING: {
-				uint8_t buffer[2];
-				buffer[0] = backup.config.controller_id;
-				buffer[1] = HW_TYPE_CUSTOM_MODULE;
-				dec->transmit(data8[0] | ((uint32_t)CAN_PACKET_PONG << 8), buffer, 2);
-			} break;
+		case CAN_PACKET_PING: {
+			uint8_t buffer[2];
+			buffer[0] = backup.config.controller_id;
+			buffer[1] = HW_TYPE_CUSTOM_MODULE;
+			if (len >= 1) {
+				can_transmit(&buses[bus], data8[0] | ((uint32_t)CAN_PACKET_PONG << 8), buffer, 2, true, 0);
+			}
+		} break;
 
-			case CAN_PACKET_PONG:
-				if (rx != &can_rx_state || !ping_sem) {
-					break;
-				}
-				// data8[0]; // Sender ID
-				xSemaphoreGive(ping_sem);
-				if (len >= 2) {
-					ping_hw_last = data8[1];
-				} else {
-					ping_hw_last = HW_TYPE_VESC_BMS;
-				}
-				break;
+		case CAN_PACKET_PONG: {
+			can_state_t *state = &buses[bus];
+			if (len >= 1) {
+				state->ping_hw = len >= 2 ? data8[1] : HW_TYPE_VESC_BMS;
+				xSemaphoreGive(state->ping_sem);
+			}
+		} break;
 
-			default:
-				break;
+		default:
+			break;
 		}
 	}
 
@@ -339,7 +288,7 @@ static void decode_msg(const can_decoder_t *dec, can_message_t *msg, bool is_rep
 
 	switch (cmd) {
 	case CAN_PACKET_UPDATE_BAUD: {
-		if (rx != &can_rx_state) {
+		if (bus != 0 || len < 4) {
 			break;
 		}
 		ind = 0;
@@ -348,9 +297,7 @@ static void decode_msg(const can_decoder_t *dec, can_message_t *msg, bool is_rep
 		CAN_BAUD baud = comm_can_kbits_to_baud(kbits);
 
 		if (baud != CAN_BAUD_INVALID) {
-			backup.config.can_baud_rate = baud;
-			main_store_backup_data();
-			comm_can_update_baudrate(delay_msec);
+			commands_queue_can_baud(baud, delay_msec);
 		}
 	} break;
 
@@ -370,7 +317,11 @@ static bool IRAM_ATTR can_rx_done(twai_node_handle_t node, const twai_rx_done_ev
 		msg.data_length_code = frame.header.dlc;
 		msg.extd = frame.header.ide;
 		if (xQueueSendFromISR(state->rx_queue, &msg, &wake) == pdTRUE) {
-			xSemaphoreGiveFromISR(proc_sem, &wake);
+			vTaskNotifyGiveFromISR(can_worker, &wake);
+		} else {
+			portENTER_CRITICAL_ISR(&stats_lock);
+			state->stats.rx_overflow++;
+			portEXIT_CRITICAL_ISR(&stats_lock);
 		}
 	}
 	return wake == pdTRUE;
@@ -388,10 +339,19 @@ static bool IRAM_ATTR can_state_change(
 	twai_node_handle_t node, const twai_state_change_event_data_t *event, void *arg) {
 	can_state_t *state = arg;
 	BaseType_t wake = pdFALSE;
-	if (event->new_sta == TWAI_ERROR_BUS_OFF) {
-		state->recover_tick = xTaskGetTickCountFromISR();
-		state->recover_pending = true;
-		xSemaphoreGiveFromISR(proc_sem, &wake);
+	if (event->new_sta == TWAI_ERROR_BUS_OFF || event->old_sta == TWAI_ERROR_BUS_OFF) {
+		portENTER_CRITICAL_ISR(&stats_lock);
+		state->bus_off = event->new_sta == TWAI_ERROR_BUS_OFF;
+		state->recover_requested = false;
+		if (state->bus_off) {
+			state->stats.bus_off++;
+		} else {
+			state->stats.recoveries++;
+		}
+		portEXIT_CRITICAL_ISR(&stats_lock);
+		if (event->new_sta == TWAI_ERROR_BUS_OFF) {
+			vTaskNotifyGiveFromISR(can_worker, &wake);
+		}
 	}
 	return wake == pdTRUE;
 }
@@ -410,36 +370,16 @@ static void can_node_stop(can_state_t *state) {
 		twai_node_delete(state->node);
 		state->node = NULL;
 	}
-	state->recover_pending = false;
+	portENTER_CRITICAL(&stats_lock);
+	state->bus_off = false;
+	state->recover_requested = false;
+	state->stats.enabled = false;
+	portEXIT_CRITICAL(&stats_lock);
 }
 
-static bool can_node_start_locked(can_state_t *state, int pin_tx, int pin_rx, uint32_t bitrate, bool reset_rx);
-
-static bool can_node_start(can_state_t *state, int pin_tx, int pin_rx, uint32_t bitrate) {
-	if (!state->send_mutex) {
-		state->send_mutex = xSemaphoreCreateMutex();
-	}
-	if (!state->rx_queue) {
-		state->rx_queue = xQueueCreate(RXBUF_LEN, sizeof(can_message_t));
-	}
-	if (!state->tx_free) {
-		state->tx_free = xQueueCreate(TXBUF_LEN, sizeof(can_tx_message_t *));
-	}
-	if (!state->send_mutex || !state->rx_queue || !state->tx_free) {
-		return false;
-	}
-
-	xSemaphoreTake(state->send_mutex, portMAX_DELAY);
-	bool res = can_node_start_locked(state, pin_tx, pin_rx, bitrate, true);
-	xSemaphoreGive(state->send_mutex);
-	return res;
-}
-
-static bool can_node_start_locked(can_state_t *state, int pin_tx, int pin_rx, uint32_t bitrate, bool reset_rx) {
+static bool can_node_start_locked(can_state_t *state, int pin_tx, int pin_rx, uint32_t bitrate) {
 	can_node_stop(state);
-	if (reset_rx) {
-		xQueueReset(state->rx_queue);
-	}
+	xQueueReset(state->rx_queue);
 	can_reset_tx(state);
 
 	twai_onchip_node_config_t config = {
@@ -466,84 +406,138 @@ static bool can_node_start_locked(can_state_t *state, int pin_tx, int pin_rx, ui
 	} else {
 		state->pin_tx = pin_tx;
 		state->pin_rx = pin_rx;
-		state->bitrate = bitrate;
+		portENTER_CRITICAL(&stats_lock);
+		state->stats.enabled = true;
+		portEXIT_CRITICAL(&stats_lock);
 	}
 	return res == ESP_OK;
 }
 
-static void can_recover(can_state_t *state) {
-	if (!state->recover_pending || !state->send_mutex || xSemaphoreTake(state->send_mutex, 0) != pdTRUE) {
-		return;
+static bool can_node_start(can_state_t *state, int pin_tx, int pin_rx, uint32_t bitrate) {
+	if (!state->send_mutex) {
+		state->send_mutex = xSemaphoreCreateMutex();
 	}
-	if (state->recover_pending &&
-			(TickType_t)(xTaskGetTickCount() - state->recover_tick) >= pdMS_TO_TICKS(100)) {
-		if (can_node_start_locked(state, state->pin_tx, state->pin_rx, state->bitrate, false)) {
-			state->recovery_cnt++;
-		} else {
-			state->recover_tick = xTaskGetTickCount();
-			state->recover_pending = true;
-		}
+	if (!state->packet_mutex) {
+		state->packet_mutex = xSemaphoreCreateMutex();
 	}
+	if (!state->rx_queue) {
+		QueueHandle_t queue = xQueueCreate(RXBUF_LEN, sizeof(can_message_t));
+		portENTER_CRITICAL(&stats_lock);
+		state->rx_queue = queue;
+		portEXIT_CRITICAL(&stats_lock);
+	}
+	if (!state->tx_free) {
+		state->tx_free = xQueueCreate(TXBUF_LEN, sizeof(can_tx_message_t *));
+	}
+	if (!state->send_mutex || !state->packet_mutex || !state->rx_queue || !state->tx_free) {
+		return false;
+	}
+
+	xSemaphoreTake(state->send_mutex, portMAX_DELAY);
+	bool res = can_node_start_locked(state, pin_tx, pin_rx, bitrate);
 	xSemaphoreGive(state->send_mutex);
+	return res;
 }
 
-static void can_transmit(can_state_t *state, uint32_t id, const uint8_t *data, uint8_t len, bool ext) {
-	if (!state->send_mutex) {
-		return;
+static bool can_recover(can_state_t *state) {
+	portENTER_CRITICAL(&stats_lock);
+	bool pending = state->bus_off && !state->recover_requested;
+	portEXIT_CRITICAL(&stats_lock);
+	if (!pending) {
+		return false;
 	}
-	xSemaphoreTake(state->send_mutex, portMAX_DELAY);
-	can_tx_message_t *msg;
-	if (state->node && !state->recover_pending && xQueueReceive(state->tx_free, &msg, pdMS_TO_TICKS(5)) == pdTRUE) {
-		len = len > 8 ? 8 : len;
-		msg->frame = (twai_frame_t){
-			.header = {.id = id, .dlc = len, .ide = ext},
-			.buffer = msg->data,
-			.buffer_len = len,
-		};
-		memcpy(msg->data, data, len);
-		if (twai_node_transmit(state->node, &msg->frame, 0) != ESP_OK) {
-			xQueueSend(state->tx_free, &msg, 0);
-		}
+	if (xSemaphoreTake(state->send_mutex, 0) != pdTRUE) {
+		return true;
+	}
+
+	portENTER_CRITICAL(&stats_lock);
+	pending = state->bus_off && !state->recover_requested;
+	if (pending) {
+		state->recover_requested = true;
+	}
+	portEXIT_CRITICAL(&stats_lock);
+
+	bool retry = pending && state->node && twai_node_recover(state->node) != ESP_OK;
+	if (retry) {
+		portENTER_CRITICAL(&stats_lock);
+		state->recover_requested = false;
+		portEXIT_CRITICAL(&stats_lock);
 	}
 	xSemaphoreGive(state->send_mutex);
+	return retry;
 }
+
+static bool can_transmit(can_state_t *state, uint32_t id, const uint8_t *data, uint8_t len, bool ext, TickType_t wait) {
+	bool sent = false;
+	if (state->send_mutex && xSemaphoreTake(state->send_mutex, wait) == pdTRUE) {
+		can_tx_message_t *msg;
+		TickType_t tx_wait = wait ? pdMS_TO_TICKS(5) : 0;
+		if (state->node && xQueueReceive(state->tx_free, &msg, tx_wait) == pdTRUE) {
+			len = len > 8 ? 8 : len;
+			msg->frame = (twai_frame_t){
+				.header = {.id = id, .dlc = len, .ide = ext},
+				.buffer = msg->data,
+				.buffer_len = len,
+			};
+			memcpy(msg->data, data, len);
+			sent = twai_node_transmit(state->node, &msg->frame, 0) == ESP_OK;
+			if (!sent) {
+				xQueueSend(state->tx_free, &msg, 0);
+			}
+		}
+		xSemaphoreGive(state->send_mutex);
+	}
+	if (!sent) {
+		portENTER_CRITICAL(&stats_lock);
+		state->stats.tx_rejected++;
+		portEXIT_CRITICAL(&stats_lock);
+	}
+	return sent;
+}
+
+#define RX_FRAMES_PER_TURN 8
 
 static void process_task(void *arg) {
+	(void)arg;
+	unsigned first = 0;
+	TickType_t wait = portMAX_DELAY;
 	for (;;) {
-		bool reclaim = can_state.recover_pending;
+		ulTaskNotifyTake(pdTRUE, wait);
+		wait = portMAX_DELAY;
+		bool saturated = false;
 
-#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32S31)
-		reclaim = reclaim || can2_state.recover_pending;
-#endif
-
-		xSemaphoreTake(proc_sem, reclaim ? pdMS_TO_TICKS(10) : portMAX_DELAY);
-
-		can_recover(&can_state);
-#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32S31)
-		can_recover(&can2_state);
-#endif
-
-		can_message_t rx_message;
-		while (can_state.rx_queue && xQueueReceive(can_state.rx_queue, &rx_message, 0) == pdTRUE) {
-			can_message_t *msg = &rx_message;
-
-			if (use_vesc_decoder && msg->extd) {
-				decode_msg(&can_decoder, msg, false);
+		for (unsigned i = 0; i < SOC_TWAI_CONTROLLER_NUM; i++) {
+			unsigned bus = (first + i) % SOC_TWAI_CONTROLLER_NUM;
+			can_state_t *state = &buses[bus];
+			if (can_recover(state)) {
+				wait = pdMS_TO_TICKS(10) + 1;
 			}
+			portENTER_CRITICAL(&stats_lock);
+			QueueHandle_t queue = state->rx_queue;
+			bool decode = !decoder_disabled[bus];
+			portEXIT_CRITICAL(&stats_lock);
+			if (!queue) {
+				continue;
+			}
+			can_message_t msg;
+			unsigned count = 0;
+			while (count < RX_FRAMES_PER_TURN && xQueueReceive(queue, &msg, 0) == pdTRUE) {
+				count++;
+
+				if (decode && msg.extd) {
+					decode_msg(bus, &msg, false);
+				}
+			}
+			saturated |= count == RX_FRAMES_PER_TURN;
 		}
 
-#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32S31)
-		while (can2_state.rx_queue && xQueueReceive(can2_state.rx_queue, &rx_message, 0) == pdTRUE) {
-			can_message_t *m = &rx_message;
+		first = (first + 1) % SOC_TWAI_CONTROLLER_NUM;
 
-			if (can2_use_vesc_dec && m->extd) {
-				decode_msg(&can2_decoder, m, false);
-			}
+		if (saturated) {
+			wait = 0;
+			taskYIELD();
 		}
-#endif
 	}
-
-	vTaskDelete(NULL);
 }
 
 static uint32_t baudrate_to_bitrate(CAN_BAUD baudrate) {
@@ -578,53 +572,62 @@ static uint32_t baudrate_to_bitrate(CAN_BAUD baudrate) {
 	}
 }
 
+bool comm_can_start_bus(unsigned bus, int pin_tx, int pin_rx, CAN_BAUD baud) {
+	if (bus >= SOC_TWAI_CONTROLLER_NUM || baud == CAN_BAUD_INVALID) {
+		return false;
+	}
+	can_state_t *state = &buses[bus];
+	if (!state->ping_sem) {
+		state->ping_sem = xSemaphoreCreateBinary();
+		if (!state->ping_sem) {
+			return false;
+		}
+	}
+	if (!can_worker && xTaskCreate(process_task, "can_proc", 3072, NULL, 7, &can_worker) != pdPASS) {
+		return false;
+	}
+
+	bool started = can_node_start(state, pin_tx, pin_rx, baudrate_to_bitrate(baud));
+	if (bus == 0) {
+		init_done = started;
+	}
+	return started;
+}
+
 void comm_can_start(int pin_tx, int pin_rx) {
 	if (init_done) {
 		comm_can_change_pins(pin_tx, pin_rx);
 		return;
 	}
-
-	if (!sem_init_done) {
-		ping_sem = xSemaphoreCreateBinary();
-		sem_init_done = true;
+	if (!comm_can_start_bus(0, pin_tx, pin_rx, backup.config.can_baud_rate)) {
+		ESP_LOGE("can", "Failed to start CAN1");
 	}
+}
 
-	if (!proc_started) {
-		proc_sem = xSemaphoreCreateBinary();
-
-		// The process-task is left running after the first init in case comm_can_stop
-		// is called from it.
-		xTaskCreatePinnedToCore(process_task, "can_proc", 3072, NULL, 8, NULL, tskNO_AFFINITY);
-		proc_started = true;
-	}
-
-	if (!can_node_start(&can_state, pin_tx, pin_rx, baudrate_to_bitrate(backup.config.can_baud_rate))) {
+void comm_can_stop_bus(unsigned bus) {
+	if (bus >= SOC_TWAI_CONTROLLER_NUM || !buses[bus].send_mutex) {
 		return;
 	}
-
-	init_done = true;
+	can_state_t *state = &buses[bus];
+	xSemaphoreTake(state->send_mutex, portMAX_DELAY);
+	if (bus == 0) {
+		init_done = false;
+	}
+	can_node_stop(state);
+	if (state->rx_queue) {
+		xQueueReset(state->rx_queue);
+	}
+	xSemaphoreGive(state->send_mutex);
 }
 
 void comm_can_stop(void) {
-	if (!init_done) {
-		return;
-	}
-
-	xSemaphoreTake(can_state.send_mutex, portMAX_DELAY);
-	init_done = false;
-	xSemaphoreGive(can_state.send_mutex);
-
-	xSemaphoreTake(can_state.send_mutex, portMAX_DELAY);
-	can_node_stop(&can_state);
-	xSemaphoreGive(can_state.send_mutex);
-}
-
-int comm_can_get_rx_recovery_cnt(void) {
-	return can_state.recovery_cnt;
+	comm_can_stop_bus(0);
 }
 
 void comm_can_use_vesc_decoder(bool use_vesc_dec) {
-	use_vesc_decoder = use_vesc_dec;
+	portENTER_CRITICAL(&stats_lock);
+	decoder_disabled[0] = !use_vesc_dec;
+	portEXIT_CRITICAL(&stats_lock);
 }
 
 CAN_BAUD comm_can_kbits_to_baud(int kbits) {
@@ -651,23 +654,38 @@ void comm_can_update_baudrate(int delay_msec) {
 	if (delay_msec > 0) {
 		vTaskDelay(pdMS_TO_TICKS(delay_msec));
 	}
-	init_done = can_node_start(
-		&can_state, can_state.pin_tx, can_state.pin_rx, baudrate_to_bitrate(backup.config.can_baud_rate));
+	can_state_t *state = &buses[0];
+	xSemaphoreTake(state->send_mutex, portMAX_DELAY);
+	if (init_done) {
+		init_done = can_node_start_locked(state, state->pin_tx, state->pin_rx, baudrate_to_bitrate(backup.config.can_baud_rate));
+	}
+	xSemaphoreGive(state->send_mutex);
 }
 
 void comm_can_change_pins(int tx, int rx) {
-	if (!init_done || (can_state.pin_tx == tx && can_state.pin_rx == rx)) {
+	if (!init_done) {
 		return;
 	}
-	init_done = can_node_start(&can_state, tx, rx, baudrate_to_bitrate(backup.config.can_baud_rate));
+	can_state_t *state = &buses[0];
+	xSemaphoreTake(state->send_mutex, portMAX_DELAY);
+	if (init_done && (state->pin_tx != tx || state->pin_rx != rx)) {
+		init_done = can_node_start_locked(state, tx, rx, baudrate_to_bitrate(backup.config.can_baud_rate));
+	}
+	xSemaphoreGive(state->send_mutex);
+}
+
+void comm_can_transmit_bus(unsigned bus, uint32_t id, const uint8_t *data, uint8_t len, bool ext) {
+	if (bus < SOC_TWAI_CONTROLLER_NUM) {
+		can_transmit(&buses[bus], id, data, len, ext, portMAX_DELAY);
+	}
 }
 
 void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
-	can_transmit(&can_state, id, data, len, true);
+	comm_can_transmit_bus(0, id, data, len, true);
 }
 
 void comm_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len) {
-	can_transmit(&can_state, id, data, len, false);
+	comm_can_transmit_bus(0, id, data, len, false);
 }
 
 /**
@@ -691,68 +709,68 @@ void comm_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len) {
  *    so that no reply is sent back.
  * 3: Same as 0, but the reply is processed locally and not sent out on the last interface.
  */
-void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send) {
-	uint8_t send_buffer[8];
+void comm_can_send_buffer_bus(unsigned bus, uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send) {
+	if (bus >= SOC_TWAI_CONTROLLER_NUM || len > RX_BUFFER_SIZE) {
+		return;
+	}
+
+	can_state_t *state = &buses[bus];
+	if (!state->packet_mutex) {
+		return;
+	}
+
+	xSemaphoreTake(state->packet_mutex, portMAX_DELAY);
+	uint8_t buffer[8];
 
 	if (len <= 6) {
-		uint32_t ind = 0;
-		send_buffer[ind++] = backup.config.controller_id;
-		send_buffer[ind++] = send;
-		memcpy(send_buffer + ind, data, len);
-		ind += len;
-		comm_can_transmit_eid(controller_id |
-				((uint32_t)CAN_PACKET_PROCESS_SHORT_BUFFER << 8), send_buffer, ind);
-	} else {
-		unsigned int end_a = 0;
-		for (unsigned int i = 0;i < len;i += 7) {
-			if (i > 255) {
-				break;
-			}
-
-			end_a = i + 7;
-
-			uint8_t send_len = 7;
-			send_buffer[0] = i;
-
-			if ((i + 7) <= len) {
-				memcpy(send_buffer + 1, data + i, send_len);
-			} else {
-				send_len = len - i;
-				memcpy(send_buffer + 1, data + i, send_len);
-			}
-
-			comm_can_transmit_eid(controller_id |
-					((uint32_t)CAN_PACKET_FILL_RX_BUFFER << 8), send_buffer, send_len + 1);
-		}
-
-		for (unsigned int i = end_a;i < len;i += 6) {
-			uint8_t send_len = 6;
-			send_buffer[0] = i >> 8;
-			send_buffer[1] = i & 0xFF;
-
-			if ((i + 6) <= len) {
-				memcpy(send_buffer + 2, data + i, send_len);
-			} else {
-				send_len = len - i;
-				memcpy(send_buffer + 2, data + i, send_len);
-			}
-
-			comm_can_transmit_eid(controller_id |
-					((uint32_t)CAN_PACKET_FILL_RX_BUFFER_LONG << 8), send_buffer, send_len + 2);
-		}
-
-		uint32_t ind = 0;
-		send_buffer[ind++] = backup.config.controller_id;
-		send_buffer[ind++] = send;
-		send_buffer[ind++] = len >> 8;
-		send_buffer[ind++] = len & 0xFF;
-		unsigned short crc = crc16(data, len);
-		send_buffer[ind++] = (uint8_t)(crc >> 8);
-		send_buffer[ind++] = (uint8_t)(crc & 0xFF);
-
-		comm_can_transmit_eid(controller_id |
-				((uint32_t)CAN_PACKET_PROCESS_RX_BUFFER << 8), send_buffer, ind++);
+		buffer[0] = backup.config.controller_id;
+		buffer[1] = send;
+		memcpy(buffer + 2, data, len);
+		uint32_t id = controller_id | ((uint32_t)CAN_PACKET_PROCESS_SHORT_BUFFER << 8);
+		can_transmit(state, id, buffer, len + 2, true, portMAX_DELAY);
+		xSemaphoreGive(state->packet_mutex);
+		return;
 	}
+
+	unsigned offset = 0;
+	while (offset < len) {
+		bool long_offset = offset > UINT8_MAX;
+		unsigned header_len = long_offset ? 2 : 1;
+		unsigned chunk_len = sizeof(buffer) - header_len;
+		if (chunk_len > len - offset) {
+			chunk_len = len - offset;
+		}
+
+		if (long_offset) {
+			buffer[0] = offset >> 8;
+		}
+		buffer[header_len - 1] = offset;
+		memcpy(buffer + header_len, data + offset, chunk_len);
+
+		CAN_PACKET_ID command = long_offset ? CAN_PACKET_FILL_RX_BUFFER_LONG : CAN_PACKET_FILL_RX_BUFFER;
+		uint32_t id = controller_id | ((uint32_t)command << 8);
+		if (!can_transmit(state, id, buffer, header_len + chunk_len, true, portMAX_DELAY)) {
+			xSemaphoreGive(state->packet_mutex);
+			return;
+		}
+		offset += chunk_len;
+	}
+
+	uint16_t crc = crc16(data, len);
+	buffer[0] = backup.config.controller_id;
+	buffer[1] = send;
+	buffer[2] = len >> 8;
+	buffer[3] = len;
+	buffer[4] = crc >> 8;
+	buffer[5] = crc;
+
+	uint32_t id = controller_id | ((uint32_t)CAN_PACKET_PROCESS_RX_BUFFER << 8);
+	can_transmit(state, id, buffer, 6, true, portMAX_DELAY);
+	xSemaphoreGive(state->packet_mutex);
+}
+
+void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send) {
+	comm_can_send_buffer_bus(0, controller_id, data, len, send);
 }
 
 /**
@@ -767,24 +785,30 @@ void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len
  * @return
  * True for success, false otherwise.
  */
-bool comm_can_ping(uint8_t controller_id, HW_TYPE *hw_type) {
-	if (!init_done) {
+bool comm_can_ping_bus(unsigned bus, uint8_t controller_id, HW_TYPE *hw_type) {
+	if (bus >= SOC_TWAI_CONTROLLER_NUM) {
+		return false;
+	}
+	can_state_t *state = &buses[bus];
+	if (!state->ping_sem) {
 		return false;
 	}
 
-	uint8_t buffer[1];
-	buffer[0] = backup.config.controller_id;
-	comm_can_transmit_eid(controller_id | ((uint32_t)CAN_PACKET_PING << 8), buffer, 1);
-
-	bool ret = xSemaphoreTake(ping_sem, 10 / portTICK_PERIOD_MS) == pdTRUE;
-
-	if (ret) {
-		if (hw_type) {
-			*hw_type = ping_hw_last;
-		}
+	xSemaphoreTake(state->ping_sem, 0);
+	uint8_t controller = backup.config.controller_id;
+	if (!can_transmit(state, controller_id | ((uint32_t)CAN_PACKET_PING << 8), &controller, 1, true, portMAX_DELAY)) {
+		return false;
 	}
+	bool received = xSemaphoreTake(state->ping_sem, pdMS_TO_TICKS(10) + 1) == pdTRUE;
 
-	return ret;
+	if (received && hw_type) {
+		*hw_type = state->ping_hw;
+	}
+	return received;
+}
+
+bool comm_can_ping(uint8_t controller_id, HW_TYPE *hw_type) {
+	return init_done && comm_can_ping_bus(0, controller_id, hw_type);
 }
 
 void comm_can_send_update_baud(int kbits, int delay_msec) {
@@ -796,112 +820,41 @@ void comm_can_send_update_baud(int kbits, int delay_msec) {
 			((uint32_t)CAN_PACKET_UPDATE_BAUD << 8), buffer, send_index);
 }
 
-#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32S31)
-
-bool comm_can2_start(int pin_tx, int pin_rx, int baud_kbits) {
-	CAN_BAUD baud = comm_can_kbits_to_baud(baud_kbits);
-	if (baud == CAN_BAUD_INVALID) {
+bool comm_can_get_stats(unsigned bus, comm_can_stats_t *stats) {
+	if (bus >= SOC_TWAI_CONTROLLER_NUM) {
 		return false;
 	}
+	portENTER_CRITICAL(&stats_lock);
+	*stats = buses[bus].stats;
+	portEXIT_CRITICAL(&stats_lock);
+	return true;
+}
 
-	if (!proc_started) {
-		proc_sem = xSemaphoreCreateBinary();
-		xTaskCreatePinnedToCore(process_task, "can_proc", 3072, NULL, 8, NULL, tskNO_AFFINITY);
-		proc_started = true;
-	}
-	can2_init_done = can_node_start(
-		&can2_state, pin_tx, pin_rx, baudrate_to_bitrate(baud));
-	return can2_init_done;
+#if SOC_TWAI_CONTROLLER_NUM > 1
+bool comm_can2_start(int pin_tx, int pin_rx, int baud_kbits) {
+	return comm_can_start_bus(1, pin_tx, pin_rx, comm_can_kbits_to_baud(baud_kbits));
 }
 
 void comm_can2_stop(void) {
-	if (!can2_init_done) {
-		return;
-	}
-	xSemaphoreTake(can2_state.send_mutex, portMAX_DELAY);
-	can2_init_done = false;
-	can_node_stop(&can2_state);
-	xSemaphoreGive(can2_state.send_mutex);
+	comm_can_stop_bus(1);
 }
 
 void comm_can2_use_vesc_decoder(bool use) {
-	can2_use_vesc_dec = use;
-}
-
-int comm_can2_get_rx_recovery_cnt(void) {
-	return can2_state.recovery_cnt;
+	portENTER_CRITICAL(&stats_lock);
+	decoder_disabled[1] = !use;
+	portEXIT_CRITICAL(&stats_lock);
 }
 
 void comm_can2_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
-	can_transmit(&can2_state, id, data, len, true);
+	comm_can_transmit_bus(1, id, data, len, true);
 }
 
 void comm_can2_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len) {
-	can_transmit(&can2_state, id, data, len, false);
+	comm_can_transmit_bus(1, id, data, len, false);
 }
 
 void comm_can2_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send_type) {
-	uint8_t buf[8];
-
-	if (len <= 6) {
-		uint32_t ind = 0;
-		buf[ind++] = backup.config.controller_id;
-		buf[ind++] = send_type;
-		memcpy(buf + ind, data, len);
-		ind += len;
-		comm_can2_transmit_eid(controller_id | ((uint32_t)CAN_PACKET_PROCESS_SHORT_BUFFER << 8), buf, ind);
-		return;
-	}
-
-	unsigned int end_a = 0;
-	for (unsigned int i = 0;i < len;i += 7) {
-		if (i > 255) {
-			break;
-		}
-
-		end_a = i + 7;
-
-		uint8_t send_len = 7;
-		buf[0] = i;
-
-		if ((i + 7) <= len) {
-			memcpy(buf + 1, data + i, send_len);
-		} else {
-			send_len = len - i;
-			memcpy(buf + 1, data + i, send_len);
-		}
-
-		comm_can2_transmit_eid(controller_id |
-				((uint32_t)CAN_PACKET_FILL_RX_BUFFER << 8), buf, send_len + 1);
-	}
-
-	for (unsigned int i = end_a;i < len;i += 6) {
-		uint8_t send_len = 6;
-		buf[0] = i >> 8;
-		buf[1] = i & 0xFF;
-
-		if ((i + 6) <= len) {
-			memcpy(buf + 2, data + i, send_len);
-		} else {
-			send_len = len - i;
-			memcpy(buf + 2, data + i, send_len);
-		}
-
-		comm_can2_transmit_eid(controller_id |
-				((uint32_t)CAN_PACKET_FILL_RX_BUFFER_LONG << 8), buf, send_len + 2);
-	}
-
-	uint32_t ind = 0;
-	buf[ind++] = backup.config.controller_id;
-	buf[ind++] = send_type;
-	buf[ind++] = len >> 8;
-	buf[ind++] = len & 0xFF;
-	unsigned short crc = crc16(data, len);
-	buf[ind++] = (uint8_t)(crc >> 8);
-	buf[ind++] = (uint8_t)(crc & 0xFF);
-
-	comm_can2_transmit_eid(controller_id |
-			((uint32_t)CAN_PACKET_PROCESS_RX_BUFFER << 8), buf, ind++);
+	comm_can_send_buffer_bus(1, controller_id, data, len, send_type);
 }
 
-#endif /* ESP32C6 || ESP32S31 */
+#endif

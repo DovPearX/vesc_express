@@ -22,6 +22,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 // Settings
 #ifndef PACKET_MAX_PL_LEN
@@ -39,6 +41,8 @@ typedef struct {
 	int bytes_left;
 	unsigned char rx_buffer[PACKET_BUFFER_LEN];
 	unsigned char tx_buffer[PACKET_BUFFER_LEN];
+	StaticSemaphore_t tx_lock_storage;
+	SemaphoreHandle_t tx_lock;
 	unsigned char *rxtxbuf;
 	int rxtxlen;
 } PACKET_STATE_t;

@@ -25,7 +25,7 @@
 #include "comm_usb.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/semphr.h"
+#include "freertos/queue.h"
 
 #include "commands.h"
 #include "datatypes.h"
@@ -55,6 +55,7 @@
 #include "esp_efuse_table.h"
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
+#include "esp_log.h"
 #include "esp_sleep.h"
 #include "soc/rtc.h"
 
@@ -65,114 +66,72 @@
 #define D(x) 						((double)x##L)
 
 // Private variables
-static SemaphoreHandle_t print_mutex;
-static bool init_done = false;
-
 static const esp_partition_t *update_partition = NULL;
 static esp_ota_handle_t update_handle = 0;
 
-// Function pointers
-static send_func_t send_func = 0;
-static send_func_t send_func_can_fwd = 0;
-static send_func_t send_func_blocking = 0;
+typedef struct {
+	send_func_t serial;
+	bool can;
+	unsigned bus;
+	uint8_t sender;
+	uint8_t response_type;
+} reply_route_t;
 
-// Blocking thread
-static SemaphoreHandle_t block_sem;
-static uint8_t blocking_thread_cmd_buffer[PACKET_MAX_PL_LEN];
-static volatile unsigned int blocking_thread_cmd_len = 0;
-static volatile bool is_blocking = false;
+typedef enum {
+	COMMAND_JOB_PACKET,
+	COMMAND_JOB_FORWARD,
+	COMMAND_JOB_CAN_BAUD,
+} command_job_type_t;
 
-// Private functions
-static void send_func_dummy(unsigned char *data, unsigned int len) {
-	(void)data; (void)len;
+typedef struct {
+	reply_route_t route;
+	command_job_type_t type;
+	CAN_BAUD baud;
+	CAN_BAUD previous_baud;
+	TickType_t queued_at;
+	int delay_ms;
+	unsigned int len;
+	uint8_t payload[PACKET_MAX_PL_LEN + 1];
+} command_job_t;
+
+#define COMMAND_QUEUE_DEPTH 4
+
+static QueueHandle_t command_queue;
+static TaskHandle_t command_worker;
+static reply_route_t worker_route;
+static portMUX_TYPE route_lock = portMUX_INITIALIZER_UNLOCKED;
+static reply_route_t last_route;
+static reply_route_t forward_routes[SOC_TWAI_CONTROLLER_NUM];
+static uint32_t dropped_commands;
+
+static void send_reply(reply_route_t route, unsigned char *data, unsigned int len) {
+	if (route.can) {
+		comm_can_send_buffer_bus(route.bus, route.sender, data, len, route.response_type);
+	} else if (route.serial) {
+		route.serial(data, len);
+	}
 }
 
-static void block_task(void *arg) {
-	for (;;) {
-		is_blocking = false;
-
-		xSemaphoreTake(block_sem, portMAX_DELAY);
-
-		uint8_t *data = blocking_thread_cmd_buffer;
-		unsigned int len = blocking_thread_cmd_len;
-
-		COMM_PACKET_ID packet_id;
-		static uint8_t send_buffer[512];
-
-		packet_id = data[0];
-		data++;
-		len--;
-
-		switch (packet_id) {
-		case COMM_PING_CAN: {
-			int32_t ind = 0;
-			send_buffer[ind++] = COMM_PING_CAN;
-
-			for (uint8_t i = 0;i < 255;i++) {
-				HW_TYPE hw_type;
-				if (comm_can_ping(i, &hw_type)) {
-					send_buffer[ind++] = i;
-				}
-			}
-
-			if (send_func_blocking) {
-				send_func_blocking(send_buffer, ind);
-			}
-		} break;
-
-		case COMM_TERMINAL_CMD:
-			data[len] = '\0';
-			terminal_process_string((char*)data);
-			break;
-
-		case COMM_CAN_UPDATE_BAUD_ALL: {
-			int32_t ind = 0;
-			uint32_t kbits = buffer_get_int16(data, &ind);
-			uint32_t delay_msec = buffer_get_int16(data, &ind);
-			CAN_BAUD baud = comm_can_kbits_to_baud(kbits);
-			if (baud != CAN_BAUD_INVALID) {
-				for (int i = 0; i < 10; i++) {
-					comm_can_send_update_baud(kbits, delay_msec);
-					vTaskDelay(50 / portTICK_PERIOD_MS);
-				}
-
-				backup.config.can_baud_rate = baud;
-				main_store_backup_data();
-				comm_can_update_baudrate(delay_msec);
-			}
-
-			ind = 0;
-			send_buffer[ind++] = packet_id;
-			send_buffer[ind++] = baud != CAN_BAUD_INVALID;
-			if (send_func_blocking) {
-				send_func_blocking(send_buffer, ind);
-			}
-		}
-			break;
-
-
-		default:
-			break;
-		}
-
+static void queue_job(command_job_t *job) {
+	if (command_queue && xQueueSend(command_queue, job, 0) == pdTRUE) {
+		return;
 	}
 
-	vTaskDelete(NULL);
+	portENTER_CRITICAL(&route_lock);
+	dropped_commands++;
+	portEXIT_CRITICAL(&route_lock);
 }
 
-void commands_init(void) {
-	print_mutex = xSemaphoreCreateMutex();
-	block_sem = xSemaphoreCreateBinary();
-	#if CONFIG_IDF_TARGET_ESP32P4
-	xTaskCreatePinnedToCore(block_task, "comm_block", 4096, NULL, 7, NULL, tskNO_AFFINITY);
-	#else
-	xTaskCreatePinnedToCore(block_task, "comm_block", 2500, NULL, 7, NULL, tskNO_AFFINITY);
-	#endif
-	init_done = true;
+static void queue_packet(const unsigned char *data, unsigned int len, reply_route_t route, command_job_type_t type) {
+	if (!len || len > PACKET_MAX_PL_LEN) {
+		return;
+	}
+	command_job_t job = {.route = route, .type = type, .len = len};
+	memcpy(job.payload, data, len);
+	queue_job(&job);
 }
 
-void commands_process_packet(unsigned char *data, unsigned int len,
-		send_func_t reply_func) {
+static void process_packet(unsigned char *data, unsigned int len, reply_route_t route) {
 	if (!len) {
 		return;
 	}
@@ -183,16 +142,13 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 	data++;
 	len--;
 
-	send_func = reply_func;
+	portENTER_CRITICAL(&route_lock);
+	last_route = route;
 
-	if (!send_func_can_fwd) {
-		send_func_can_fwd = reply_func;
+	if (!forward_routes[route.bus].serial && !forward_routes[route.bus].can) {
+		forward_routes[route.bus] = route;
 	}
-
-	// Avoid calling invalid function pointer if it is null.
-	if (!reply_func) {
-		reply_func = send_func_dummy;
-	}
+	portEXIT_CRITICAL(&route_lock);
 
 	switch (packet_id) {
 	case COMM_FW_VERSION: {
@@ -229,7 +185,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 
 		buffer_append_uint32(send_buffer, main_calc_hw_crc(), &ind);
 
-		reply_func(send_buffer, ind);
+		send_reply(route, send_buffer, ind);
 	} break;
 
 	// TODO: Run crc check on new app, also make sure to skip duplicate packets
@@ -270,7 +226,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		uint8_t send_buffer[50];
 		send_buffer[ind++] = COMM_ERASE_NEW_APP;
 		send_buffer[ind++] = ok;
-		reply_func(send_buffer, ind);
+		send_reply(route, send_buffer, ind);
 	} break;
 
 	case COMM_WRITE_NEW_APP_DATA: {
@@ -295,7 +251,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		send_buffer[ind++] = COMM_WRITE_NEW_APP_DATA;
 		send_buffer[ind++] = ok;
 		buffer_append_uint32(send_buffer, new_app_offset, &ind);
-		reply_func(send_buffer, ind);
+		send_reply(route, send_buffer, ind);
 	} break;
 
 	case COMM_REBOOT: {
@@ -306,20 +262,24 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 	} break;
 
 	case COMM_FORWARD_CAN:
-		send_func_can_fwd = reply_func;
-		comm_can_send_buffer(data[0], data + 1, len - 1, 0);
+		if (!len) {
+			break;
+		}
+		portENTER_CRITICAL(&route_lock);
+		forward_routes[route.bus] = route;
+		portEXIT_CRITICAL(&route_lock);
+		comm_can_send_buffer_bus(route.bus, data[0], data + 1, len - 1, 0);
 		break;
 
 	case COMM_CAN_FWD_FRAME: {
+		if (len < 5) {
+			break;
+		}
 		int32_t ind = 0;
 		uint32_t id = buffer_get_uint32(data, &ind);
 		bool is_ext = data[ind++];
 
-		if (is_ext) {
-			comm_can_transmit_eid(id, data + ind, len - ind);
-		} else {
-			comm_can_transmit_sid(id, data + ind, len - ind);
-		}
+		comm_can_transmit_bus(route.bus, id, data + ind, len - ind, is_ext);
 	} break;
 
 	case COMM_GET_CUSTOM_CONFIG:
@@ -352,7 +312,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 #else
 		int32_t len = confparser_serialize_main_config_t(send_buffer_global + ind, conf);
 #endif
-		commands_send_packet(send_buffer_global, len + ind);
+		send_reply(route, send_buffer_global, len + ind);
 		mempools_free_packet_buffer(send_buffer_global);
 
 		free(conf);
@@ -386,9 +346,11 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 			int32_t ind = 0;
 			uint8_t send_buffer[50];
 			send_buffer[ind++] = packet_id;
-			reply_func(send_buffer, ind);
+			send_reply(route, send_buffer, ind);
 		} else {
-			commands_printf("Warning: Could not set configuration");
+			uint8_t warning[] = "\0Warning: Could not set configuration";
+			warning[0] = COMM_PRINT;
+			send_reply(route, warning, sizeof(warning) - 1);
 		}
 
 		free(conf);
@@ -418,7 +380,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		buffer_append_int32(send_buffer_global, ofs_conf, &ind);
 		memcpy(send_buffer_global + ind, data_main_config_t_ + ofs_conf, len_conf);
 		ind += len_conf;
-		reply_func(send_buffer_global, ind);
+		send_reply(route, send_buffer_global, ind);
 		mempools_free_packet_buffer(send_buffer_global);
 	} break;
 
@@ -457,25 +419,175 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 #endif
 		buffer_append_str_max_len(send_buffer, user_commit_hash, 46, &ind);
 
-		reply_func(send_buffer, ind);
+		send_reply(route, send_buffer, ind);
 	} break;
 
 	// Blocking commands
 	case COMM_TERMINAL_CMD:
 	case COMM_PING_CAN:
 	case COMM_CAN_UPDATE_BAUD_ALL:
-		if (!is_blocking) {
-			memcpy(blocking_thread_cmd_buffer, data - 1, len + 1);
-			blocking_thread_cmd_len = len + 1;
-			is_blocking = true;
-			send_func_blocking = reply_func;
-			xSemaphoreGive(block_sem);
-		}
+		queue_packet(data - 1, len + 1, route, COMMAND_JOB_PACKET);
 		break;
 
 	default:
 		break;
 	}
+}
+
+static void block_task(void *arg) {
+	(void)arg;
+	static command_job_t job;
+	CAN_BAUD pending_baud = CAN_BAUD_INVALID;
+	CAN_BAUD original_baud = CAN_BAUD_INVALID;
+	TickType_t queued_at = 0;
+	TickType_t delay = 0;
+
+	for (;;) {
+		TickType_t wait = portMAX_DELAY;
+		if (pending_baud != CAN_BAUD_INVALID) {
+			TickType_t elapsed = xTaskGetTickCount() - queued_at;
+			wait = elapsed < delay ? delay - elapsed : 0;
+			if (wait == 0) {
+				if (backup.config.can_baud_rate == original_baud) {
+					backup.config.can_baud_rate = pending_baud;
+					main_store_backup_data();
+					comm_can_update_baudrate(0);
+				}
+				pending_baud = CAN_BAUD_INVALID;
+			}
+		}
+		if (xQueueReceive(command_queue, &job, wait) != pdTRUE) {
+			continue;
+		}
+		worker_route = job.route;
+		if (job.type == COMMAND_JOB_FORWARD) {
+			send_reply(job.route, job.payload, job.len);
+			continue;
+		}
+		if (job.type == COMMAND_JOB_CAN_BAUD) {
+			CAN_BAUD current_baud = backup.config.can_baud_rate;
+			if (job.previous_baud != current_baud) {
+				continue;
+			}
+			if (job.baud == current_baud) {
+				pending_baud = CAN_BAUD_INVALID;
+			} else if (job.baud != pending_baud) {
+				pending_baud = job.baud;
+				original_baud = current_baud;
+				queued_at = job.queued_at;
+				delay = job.delay_ms > 0 ? pdMS_TO_TICKS(job.delay_ms) : 0;
+			}
+			continue;
+		}
+
+		COMM_PACKET_ID packet_id = job.payload[0];
+		uint8_t *data = job.payload + 1;
+		unsigned int len = job.len - 1;
+		static uint8_t send_buffer[256];
+
+		switch (packet_id) {
+		case COMM_PING_CAN: {
+			int32_t ind = 0;
+			send_buffer[ind++] = COMM_PING_CAN;
+
+			for (uint8_t i = 0; i < 255; i++) {
+				HW_TYPE hw_type;
+				if (comm_can_ping_bus(job.route.bus, i, &hw_type)) {
+					send_buffer[ind++] = i;
+				}
+			}
+
+			send_reply(job.route, send_buffer, ind);
+		} break;
+
+		case COMM_TERMINAL_CMD:
+			data[len] = '\0';
+			terminal_process_string((char *)data);
+			break;
+
+		case COMM_CAN_UPDATE_BAUD_ALL: {
+			if (len < 4) {
+				break;
+			}
+			int32_t ind = 0;
+			uint32_t kbits = buffer_get_int16(data, &ind);
+			uint32_t delay_msec = buffer_get_int16(data, &ind);
+			CAN_BAUD baud = comm_can_kbits_to_baud(kbits);
+			if (baud != CAN_BAUD_INVALID) {
+				for (int i = 0; i < 10; i++) {
+					comm_can_send_update_baud(kbits, delay_msec);
+					vTaskDelay(50 / portTICK_PERIOD_MS);
+				}
+
+				backup.config.can_baud_rate = baud;
+				main_store_backup_data();
+				comm_can_update_baudrate(delay_msec);
+			}
+
+			ind = 0;
+			send_buffer[ind++] = packet_id;
+			send_buffer[ind++] = baud != CAN_BAUD_INVALID;
+			send_reply(job.route, send_buffer, ind);
+		} break;
+
+		default:
+			process_packet(job.payload, job.len, job.route);
+			break;
+		}
+	}
+}
+
+void commands_init(void) {
+	command_queue = xQueueCreate(COMMAND_QUEUE_DEPTH, sizeof(command_job_t));
+	if (!command_queue) {
+		ESP_LOGE("commands", "Failed to create command queue");
+		return;
+	}
+	xTaskCreate(block_task, "comm_block", 4096, NULL, 7, &command_worker);
+	if (!command_worker) {
+		ESP_LOGE("commands", "Failed to create command task");
+		vQueueDelete(command_queue);
+		command_queue = NULL;
+	}
+}
+
+void commands_process_packet(unsigned char *data, unsigned int len, send_func_t reply_func) {
+	process_packet(data, len, (reply_route_t){.serial = reply_func});
+}
+
+void commands_process_can_packet(unsigned char *data, unsigned int len, unsigned bus, uint8_t sender, uint8_t response_type) {
+	reply_route_t route = {
+		.can = response_type != 2,
+		.bus = bus,
+		.sender = sender,
+		.response_type = response_type,
+	};
+	queue_packet(data, len, route, COMMAND_JOB_PACKET);
+}
+
+void commands_queue_can_forward(unsigned bus, unsigned char *data, unsigned int len) {
+	portENTER_CRITICAL(&route_lock);
+	reply_route_t route = forward_routes[bus];
+	portEXIT_CRITICAL(&route_lock);
+	queue_packet(data, len, route, COMMAND_JOB_FORWARD);
+}
+
+void commands_queue_can_baud(CAN_BAUD baud, int delay_ms) {
+	command_job_t job = {
+		.type = COMMAND_JOB_CAN_BAUD,
+		.baud = baud,
+		.previous_baud = backup.config.can_baud_rate,
+		.delay_ms = delay_ms,
+		.queued_at = xTaskGetTickCount(),
+	};
+	queue_job(&job);
+}
+
+uint32_t commands_get_dropped_count(void) {
+	portENTER_CRITICAL(&route_lock);
+	uint32_t count = dropped_commands;
+	portEXIT_CRITICAL(&route_lock);
+	return count;
 }
 
 /**
@@ -488,37 +600,30 @@ void commands_process_packet(unsigned char *data, unsigned int len,
  * The data length.
  */
 void commands_send_packet_can_last(unsigned char *data, unsigned int len) {
-	if (send_func_can_fwd) {
-		send_func_can_fwd(data, len);
-	}
+	portENTER_CRITICAL(&route_lock);
+	reply_route_t route = forward_routes[0];
+	portEXIT_CRITICAL(&route_lock);
+	send_reply(route, data, len);
 }
 
 void commands_send_packet(unsigned char *data, unsigned int len) {
-	if (send_func) {
-		send_func(data, len);
+	if (command_worker && xTaskGetCurrentTaskHandle() == command_worker) {
+		send_reply(worker_route, data, len);
+		return;
 	}
-}
 
-send_func_t commands_get_send_func(void) {
-	return send_func;
-}
-
-void commands_set_send_func(send_func_t func) {
-	send_func = func;
+	portENTER_CRITICAL(&route_lock);
+	reply_route_t route = last_route;
+	portEXIT_CRITICAL(&route_lock);
+	send_reply(route, data, len);
 }
 
 int commands_printf(const char* format, ...) {
-	if (!init_done) {
-		return 0;
-	}
-
-	xSemaphoreTake(print_mutex, portMAX_DELAY);
-
 	va_list arg;
 	va_start (arg, format);
 	int len;
 
-	char *print_buffer = malloc(PRINT_BUFFER_SIZE);
+	char print_buffer[PRINT_BUFFER_SIZE];
 
 	print_buffer[0] = COMM_PRINT;
 	len = vsnprintf(print_buffer + 1, (PRINT_BUFFER_SIZE - 1), format, arg);
@@ -529,9 +634,6 @@ int commands_printf(const char* format, ...) {
 	if(len > 0) {
 		commands_send_packet((unsigned char*)print_buffer, len_to_print);
 	}
-
-	free(print_buffer);
-	xSemaphoreGive(print_mutex);
 
 	return len_to_print - 1;
 }

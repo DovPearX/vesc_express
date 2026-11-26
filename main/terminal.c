@@ -22,6 +22,8 @@
 #include "commands.h"
 #include "comm_can.h"
 #include <string.h>
+#include <inttypes.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
 #include <ctype.h>
@@ -169,10 +171,19 @@ void terminal_process_string(char *str) {
 		commands_printf("Firmware          : %d.%d", FW_VERSION_MAJOR, FW_VERSION_MINOR);
 		commands_printf("Hardware          : %s", HW_NAME);
 
-		commands_printf("CAN RX Recoveries : %d", comm_can_get_rx_recovery_cnt());
-#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32S31)
-		commands_printf("CAN2 RX Recoveries: %d", comm_can2_get_rx_recovery_cnt());
-#endif
+		uint32_t dropped = commands_get_dropped_count();
+		commands_printf("Commands dropped  : %" PRIu32, dropped);
+
+		for (unsigned bus = 0; bus < SOC_TWAI_CONTROLLER_NUM; bus++) {
+			comm_can_stats_t stats;
+			comm_can_get_stats(bus, &stats);
+
+			commands_printf("CAN%u              : %s", bus + 1, stats.enabled ? "enabled" : "disabled");
+			commands_printf("  RX overflow     : %" PRIu32, stats.rx_overflow);
+			commands_printf("  TX rejected     : %" PRIu32, stats.tx_rejected);
+			commands_printf("  Bus-off         : %" PRIu32, stats.bus_off);
+			commands_printf("  Recoveries      : %" PRIu32, stats.recoveries);
+		}
 
 		const esp_partition_t *running = esp_ota_get_running_partition();
 		if (running != NULL) {
@@ -204,6 +215,13 @@ void terminal_process_string(char *str) {
 #endif
 		commands_printf(" ");
 	} else if (strcmp(argv[0], "can_scan") == 0) {
+		comm_can_stats_t stats;
+		comm_can_get_stats(0, &stats);
+		if (!stats.enabled) {
+			commands_printf("CAN1 is disabled");
+			return;
+		}
+
 		bool found = false;
 		for (int i = 0;i < 254;i++) {
 			HW_TYPE hw_type;
@@ -220,13 +238,6 @@ void terminal_process_string(char *str) {
 		}
 	} else if (strcmp(argv[0], "uptime") == 0) {
 		commands_printf("Uptime: %.2f s", (double)(utils_ms_tot() / 1000.0));
-	} else if (strcmp(argv[0], "store_log_context") == 0) {
-#if LOGS_ENABLED
-		commands_store_send_func();
-		commands_printf("stored send_func: %p", commands_get_send_func());
-#else
-		commands_printf("Debug logging is disabled for this firmware!");
-#endif
 	}
 
 	// The help command
@@ -252,14 +263,6 @@ void terminal_process_string(char *str) {
 
 		commands_printf("uptime");
 		commands_printf("  Prints how many seconds have passed since boot.");
-		
-		commands_printf("store_log_context");
-		commands_printf("  Remember the current device and connection method,\n"
-		                "  and send future debug logs to it. Only usefull while developing the firmware."
-#if !LOGS_ENABLED
-                        "\n  (Disabled for this firmware)"
-#endif	
-		);
 
 		for (int i = 0;i < callback_write;i++) {
 			if (callbacks[i].cbf == 0) {

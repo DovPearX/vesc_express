@@ -29,6 +29,7 @@ static int try_decode_packet(unsigned char *buffer, unsigned int in_len,
 void packet_init(void (*s_func)(unsigned char *data, unsigned int len),
 		void (*p_func)(unsigned char *data, unsigned int len), PACKET_STATE_t *state) {
 	memset(state, 0, sizeof(PACKET_STATE_t));
+	state->tx_lock = xSemaphoreCreateMutexStatic(&state->tx_lock_storage);
 	state->send_func = s_func;
 	state->process_func = p_func;
 }
@@ -40,10 +41,11 @@ void packet_reset(PACKET_STATE_t *state) {
 }
 
 void packet_send_packet(unsigned char *data, unsigned int len, PACKET_STATE_t *state) {
-	if (len == 0 || len > PACKET_MAX_PL_LEN) {
+	if (len == 0 || len > PACKET_MAX_PL_LEN || !state->tx_lock) {
 		return;
 	}
 
+	xSemaphoreTake(state->tx_lock, portMAX_DELAY);
 	int b_ind = 0;
 
 	if (len <= 255) {
@@ -71,6 +73,7 @@ void packet_send_packet(unsigned char *data, unsigned int len, PACKET_STATE_t *s
 	if (state->send_func) {
 		state->send_func(state->tx_buffer, b_ind);
 	}
+	xSemaphoreGive(state->tx_lock);
 }
 
 void packet_process_byte(uint8_t rx_data, PACKET_STATE_t *state) {
@@ -248,8 +251,7 @@ static int try_decode_packet(unsigned char *buffer, unsigned int in_len,
 			process_func(buffer + data_start, len);
 		}
 
-		return len + data_start + 3;
-	} else {
-		return -1;
 	}
+
+	return len + data_start + 3;
 }

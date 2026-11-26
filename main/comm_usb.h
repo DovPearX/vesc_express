@@ -21,6 +21,7 @@
 #define MAIN_COMM_USB_H_
 
 void comm_usb_init(void);
+void comm_usb_cdc_init(void);
 void comm_usb_send_packet(unsigned char *data, unsigned int len);
 
 #endif /* MAIN_COMM_USB_H_ */

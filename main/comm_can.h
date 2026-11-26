@@ -21,11 +21,25 @@
 #define MAIN_COMM_CAN_H_
 
 #include "datatypes.h"
+#include "soc/soc_caps.h"
 
-// Functions
+typedef struct {
+	bool enabled;
+	uint32_t rx_overflow;
+	uint32_t tx_rejected;
+	uint32_t bus_off;
+	uint32_t recoveries;
+} comm_can_stats_t;
+
+bool comm_can_start_bus(unsigned bus, int pin_tx, int pin_rx, CAN_BAUD baud);
+void comm_can_stop_bus(unsigned bus);
+bool comm_can_ping_bus(unsigned bus, uint8_t controller_id, HW_TYPE *hw_type);
+void comm_can_transmit_bus(unsigned bus, uint32_t id, const uint8_t *data, uint8_t len, bool ext);
+bool comm_can_get_stats(unsigned bus, comm_can_stats_t *stats);
+void comm_can_send_buffer_bus(unsigned bus, uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send);
+
 void comm_can_start(int pin_tx, int pin_rx);
 void comm_can_stop(void);
-int comm_can_get_rx_recovery_cnt(void);
 void comm_can_use_vesc_decoder(bool use_vesc_dec);
 CAN_BAUD comm_can_kbits_to_baud(int kbits);
 void comm_can_update_baudrate(int delay_msec);
@@ -37,11 +51,10 @@ bool comm_can_ping(uint8_t controller_id, HW_TYPE *hw_type);
 
 void comm_can_send_update_baud(int kbits, int delay_msec);
 
-#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32S31)
+#if SOC_TWAI_CONTROLLER_NUM > 1
 bool comm_can2_start(int pin_tx, int pin_rx, int baud_kbits);
 void comm_can2_stop(void);
 void comm_can2_use_vesc_decoder(bool use);
-int  comm_can2_get_rx_recovery_cnt(void);
 void comm_can2_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can2_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can2_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send_type);
