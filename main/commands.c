@@ -33,7 +33,6 @@
 #include "comm_can.h"
 #include "terminal.h"
 #include "mempools.h"
-#include "utils.h"
 
 #ifdef OVR_CONF_PARSER_H
 #include OVR_CONF_PARSER_H
@@ -61,9 +60,6 @@
 
 // Settings
 #define PRINT_BUFFER_SIZE	400
-
-// For double precision literals
-#define D(x) 						((double)x##L)
 
 // Private variables
 static const esp_partition_t *update_partition = NULL;

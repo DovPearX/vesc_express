@@ -34,7 +34,6 @@
 #include "crc.h"
 #include "packet.h"
 #include "commands.h"
-#include "utils.h"
 #include <string.h>
 
 // Status messages

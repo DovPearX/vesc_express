@@ -9,7 +9,6 @@ set(COMPONENT_SRCS
 "commands.c"
 "terminal.c"
 "mempools.c"
-"utils.c"
 
 "config/confsrc.c"
 "hwconf/hw.c"

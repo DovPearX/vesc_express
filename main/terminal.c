@@ -31,7 +31,7 @@
 #include "nvs_flash.h"
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
-#include "utils.h"
+#include "esp_timer.h"
 #include "spi_flash_mmap.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -237,7 +237,7 @@ void terminal_process_string(char *str) {
 			commands_printf("No CAN devices found\n");
 		}
 	} else if (strcmp(argv[0], "uptime") == 0) {
-		commands_printf("Uptime: %.2f s", (double)(utils_ms_tot() / 1000.0));
+		commands_printf("Uptime: %.2f s", esp_timer_get_time() / 1000000.0);
 	}
 
 	// The help command
