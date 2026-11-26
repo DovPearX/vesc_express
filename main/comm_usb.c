@@ -48,7 +48,7 @@ static void send_packet_raw(unsigned char *buffer, unsigned int len) {
 	unsigned int sent = 0;
 	int fail_cnt = 0;
 
-	while (sent < len) {
+	while (sent < len && fail_cnt < 3) {
 		int to_send = len - sent;
 		if (to_send > 150) {
 			to_send = 150;
@@ -61,17 +61,14 @@ static void send_packet_raw(unsigned char *buffer, unsigned int len) {
 			sent += sent_now;
 			fail_cnt = 0;
 		}
-
-		if (fail_cnt >= 3) {
-			break;
-		}
 	}
 }
 
 void comm_usb_init(void) {
-	usb_serial_jtag_driver_config_t usb_serial_jtag_config;
-	usb_serial_jtag_config.rx_buffer_size = 1024;
-	usb_serial_jtag_config.tx_buffer_size = 256;
+	usb_serial_jtag_driver_config_t usb_serial_jtag_config = {
+		.rx_buffer_size = 1024,
+		.tx_buffer_size = 256,
+	};
 	esp_err_t result = usb_serial_jtag_driver_install(&usb_serial_jtag_config);
 	if (result != ESP_OK) {
 		ESP_LOGE("usb_jtag", "Driver initialization failed: %s", esp_err_to_name(result));

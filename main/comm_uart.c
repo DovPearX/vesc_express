@@ -23,7 +23,7 @@
 #include "packet.h"
 #include "driver/uart.h"
 #include "esp_log.h"
-#include <string.h>
+#include <stdlib.h>
 
 typedef struct {
 	int uart_num;
@@ -84,12 +84,10 @@ bool comm_uart_init(int pin_tx, int pin_rx, int uart_num, int baudrate) {
 
 	comm_uart_stop(uart_num);
 
-	uart_state *state;
-	state = malloc(sizeof(uart_state));
+	uart_state *state = calloc(1, sizeof(uart_state));
 	if (!state) {
 		return false;
 	}
-	memset(state, 0, sizeof(uart_state));
 	state->uart_num = uart_num;
 
 	uart_config_t uart_config = {

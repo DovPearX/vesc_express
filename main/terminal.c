@@ -25,7 +25,6 @@
 #include <inttypes.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <math.h>
 #include <ctype.h>
 
 #include "nvs_flash.h"
@@ -63,10 +62,10 @@ static uint32_t prev_time = 0;
 
 const char* utils_hw_type_to_string(HW_TYPE hw) {
 	switch (hw) {
-	case HW_TYPE_VESC: return "HW_TYPE_VESC"; break;
-	case HW_TYPE_VESC_BMS: return "HW_TYPE_VESC_BMS"; break;
-	case HW_TYPE_CUSTOM_MODULE: return "HW_TYPE_CUSTOM_MODULE"; break;
-	default: return "FAULT_HARDWARE"; break;
+	case HW_TYPE_VESC: return "HW_TYPE_VESC";
+	case HW_TYPE_VESC_BMS: return "HW_TYPE_VESC_BMS";
+	case HW_TYPE_CUSTOM_MODULE: return "HW_TYPE_CUSTOM_MODULE";
+	default: return "FAULT_HARDWARE";
 	}
 }
 
@@ -140,11 +139,7 @@ void terminal_process_string(char *str) {
 			new_task_info[i].task_run_time = tasks[i].ulRunTimeCounter;
 
 		}
-		if (prev_taskinfo != NULL){
-			free(prev_taskinfo);
-			prev_taskinfo = NULL;
-		}
-
+		free(prev_taskinfo);
 		prev_taskinfo = new_task_info;
 		prev_taskinfo_n = num_tasks;
 		prev_time = time_total;
@@ -231,11 +226,7 @@ void terminal_process_string(char *str) {
 			}
 		}
 
-		if (found) {
-			commands_printf("Done\n");
-		} else {
-			commands_printf("No CAN devices found\n");
-		}
+		commands_printf("%s", found ? "Done\n" : "No CAN devices found\n");
 	} else if (strcmp(argv[0], "uptime") == 0) {
 		commands_printf("Uptime: %.2f s", esp_timer_get_time() / 1000000.0);
 	}

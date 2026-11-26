@@ -22,7 +22,6 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-#include "comm_usb.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -146,6 +145,13 @@ static void send_reply(reply_route_t route, unsigned char *data, unsigned int le
 	}
 }
 
+static void buffer_append_str_max_len(uint8_t *buffer, const char *str, size_t max_len, int32_t *index) {
+	size_t str_len = strnlen(str, max_len);
+	memcpy(buffer + *index, str, str_len);
+	*index += str_len;
+	buffer[(*index)++] = '\0';
+}
+
 static void queue_job(command_job_t *job) {
 	if (command_queue && xQueueSend(command_queue, job, 0) == pdTRUE) {
 		return;
@@ -170,9 +176,7 @@ static void process_packet(unsigned char *data, unsigned int len, reply_route_t 
 		return;
 	}
 
-	COMM_PACKET_ID packet_id;
-
-	packet_id = data[0];
+	COMM_PACKET_ID packet_id = data[0];
 	data++;
 	len--;
 
@@ -227,13 +231,11 @@ static void process_packet(unsigned char *data, unsigned int len, reply_route_t 
 		if (update_handle != 0 && update_header_received && ota_crc_matches()) {
 			esp_err_t res = esp_ota_end(update_handle);
 			update_handle = 0;
-			if (res == ESP_OK) {
-				if (esp_ota_set_boot_partition(update_partition) == ESP_OK) {
-					vTaskDelay(pdMS_TO_TICKS(50));
+			if (res == ESP_OK && esp_ota_set_boot_partition(update_partition) == ESP_OK) {
+				vTaskDelay(pdMS_TO_TICKS(50));
 
-					// Restart normally so the bootloader loads the new OTA image.
-					esp_restart();
-				}
+				// Restart normally so the bootloader loads the new OTA image.
+				esp_restart();
 			}
 		}
 		xSemaphoreGive(update_lock);
@@ -258,11 +260,8 @@ static void process_packet(unsigned char *data, unsigned int len, reply_route_t 
 		}
 		xSemaphoreGive(update_lock);
 
-		ind = 0;
-		uint8_t send_buffer[2];
-		send_buffer[ind++] = COMM_ERASE_NEW_APP;
-		send_buffer[ind++] = ok;
-		send_reply(route, send_buffer, ind);
+		uint8_t send_buffer[] = {COMM_ERASE_NEW_APP, ok};
+		send_reply(route, send_buffer, sizeof(send_buffer));
 	} break;
 
 	case COMM_WRITE_NEW_APP_DATA: {
@@ -326,15 +325,13 @@ static void process_packet(unsigned char *data, unsigned int len, reply_route_t 
 
 	case COMM_GET_CUSTOM_CONFIG:
 	case COMM_GET_CUSTOM_CONFIG_DEFAULT: {
-		main_config_t *conf = calloc(1, sizeof(main_config_t));
-
 		int conf_ind = data[0];
 
 		if (conf_ind != 0) {
-			free(conf);
 			break;
 		}
 
+		main_config_t *conf = calloc(1, sizeof(main_config_t));
 		if (packet_id == COMM_GET_CUSTOM_CONFIG) {
 			*conf = backup.config;
 		} else {
@@ -361,20 +358,19 @@ static void process_packet(unsigned char *data, unsigned int len, reply_route_t 
 	} break;
 
 	case COMM_SET_CUSTOM_CONFIG: {
-		main_config_t *conf = calloc(1, sizeof(main_config_t));
-		*conf = backup.config;
-
 		int conf_ind = data[0];
 
 		if (conf_ind != 0) {
-			free(conf);
 			break;
 		}
 
+		main_config_t *conf = calloc(1, sizeof(main_config_t));
+		*conf = backup.config;
+
 #ifdef OVR_CONF_DESERIALIZE
-		if (conf_ind == 0 && OVR_CONF_DESERIALIZE(data + 1, conf)) {
+		if (OVR_CONF_DESERIALIZE(data + 1, conf)) {
 #else
-		if (conf_ind == 0 && confparser_deserialize_main_config_t(data + 1, conf)) {
+		if (confparser_deserialize_main_config_t(data + 1, conf)) {
 #endif
 			bool baud_changed = backup.config.can_baud_rate != conf->can_baud_rate;
 			backup.config = *conf;
@@ -385,10 +381,8 @@ static void process_packet(unsigned char *data, unsigned int len, reply_route_t 
 
 			main_store_backup_data();
 
-			int32_t ind = 0;
-			uint8_t send_buffer[50];
-			send_buffer[ind++] = packet_id;
-			send_reply(route, send_buffer, ind);
+			uint8_t send_buffer[] = {packet_id};
+			send_reply(route, send_buffer, sizeof(send_buffer));
 		} else {
 			uint8_t warning[] = "\0Warning: Could not set configuration";
 			warning[0] = COMM_PRINT;
@@ -427,23 +421,11 @@ static void process_packet(unsigned char *data, unsigned int len, reply_route_t 
 	} break;
 
 	case COMM_FW_INFO: {
-		// Write at most the first max_len characters of str into buffer,
-		// followed by a null byte.
-		void buffer_append_str_max_len(uint8_t *buffer, const char *str, size_t max_len, int32_t *index) {
-			size_t str_len = strnlen(str, max_len);
-
-			memcpy(&buffer[*index], str, str_len);
-			*index += str_len;
-			buffer[(*index)++] = '\0';
-		}
-
 		int32_t ind = 0;
 		uint8_t send_buffer[145];
 
 		send_buffer[ind++] = COMM_FW_INFO;
 
-		// This information is technically duplicated with COMM_FW_VERSION, but
-		// I don't care.
 		send_buffer[ind++] = FW_VERSION_MAJOR;
 		send_buffer[ind++] = FW_VERSION_MINOR;
 		send_buffer[ind++] = FW_TEST_VERSION_NUMBER;
@@ -530,8 +512,7 @@ static void block_task(void *arg) {
 			send_buffer[ind++] = COMM_PING_CAN;
 
 			for (uint8_t i = 0; i < 255; i++) {
-				HW_TYPE hw_type;
-				if (comm_can_ping_bus(job.route.bus, i, &hw_type)) {
+				if (comm_can_ping_bus(job.route.bus, i, NULL)) {
 					send_buffer[ind++] = i;
 				}
 			}
@@ -563,10 +544,8 @@ static void block_task(void *arg) {
 				comm_can_update_baudrate(delay_msec);
 			}
 
-			ind = 0;
-			send_buffer[ind++] = packet_id;
-			send_buffer[ind++] = baud != CAN_BAUD_INVALID;
-			send_reply(job.route, send_buffer, ind);
+			uint8_t result[] = {packet_id, baud != CAN_BAUD_INVALID};
+			send_reply(job.route, result, sizeof(result));
 		} break;
 
 		default:
@@ -662,19 +641,19 @@ void commands_send_packet(unsigned char *data, unsigned int len) {
 int commands_printf(const char* format, ...) {
 	va_list arg;
 	va_start (arg, format);
-	int len;
-
 	char print_buffer[PRINT_BUFFER_SIZE];
 
 	print_buffer[0] = COMM_PRINT;
-	len = vsnprintf(print_buffer + 1, (PRINT_BUFFER_SIZE - 1), format, arg);
+	int len = vsnprintf(print_buffer + 1, sizeof(print_buffer) - 1, format, arg);
 	va_end (arg);
 
-	int len_to_print = (len < (PRINT_BUFFER_SIZE - 1)) ? len + 1 : PRINT_BUFFER_SIZE;
-
-	if(len > 0) {
-		commands_send_packet((unsigned char*)print_buffer, len_to_print);
+	if (len >= PRINT_BUFFER_SIZE) {
+		len = PRINT_BUFFER_SIZE - 1;
 	}
 
-	return len_to_print - 1;
+	if (len > 0) {
+		commands_send_packet((unsigned char*)print_buffer, len + 1);
+	}
+
+	return len;
 }
