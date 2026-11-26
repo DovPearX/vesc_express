@@ -48,6 +48,8 @@
 
 #include "packet.h"
 #include "buffer.h"
+#include "crc.h"
+#include "freertos/semphr.h"
 #include "main.h"
 
 #include "esp_efuse.h"
@@ -64,6 +66,42 @@
 // Private variables
 static const esp_partition_t *update_partition = NULL;
 static esp_ota_handle_t update_handle = 0;
+static SemaphoreHandle_t update_lock;
+static uint32_t update_size;
+static uint16_t update_crc;
+static bool update_header_received;
+
+static bool ota_crc_matches(void) {
+	uint8_t buffer[256];
+	uint16_t crc = 0;
+	for (uint32_t offset = 0; offset < update_size;) {
+		size_t size = update_size - offset;
+		if (size > sizeof(buffer)) {
+			size = sizeof(buffer);
+		}
+		if (esp_partition_read(update_partition, offset, buffer, size) != ESP_OK) {
+			return false;
+		}
+		crc = crc16_with_init(buffer, size, crc);
+		offset += size;
+	}
+	return crc == update_crc;
+}
+
+static bool ota_chunk_matches(uint32_t offset, const uint8_t *data, size_t len) {
+	uint8_t buffer[256];
+	while (len > 0) {
+		size_t size = len < sizeof(buffer) ? len : sizeof(buffer);
+		if (esp_partition_read(update_partition, offset, buffer, size) != ESP_OK ||
+				memcmp(buffer, data, size) != 0) {
+			return false;
+		}
+		offset += size;
+		data += size;
+		len -= size;
+	}
+	return true;
+}
 
 typedef struct {
 	send_func_t serial;
@@ -184,42 +222,44 @@ static void process_packet(unsigned char *data, unsigned int len, reply_route_t 
 		send_reply(route, send_buffer, ind);
 	} break;
 
-	// TODO: Run crc check on new app, also make sure to skip duplicate packets
 	case COMM_JUMP_TO_BOOTLOADER:
-		if (update_handle != 0) {
-			if (esp_ota_end(update_handle) == ESP_OK) {
+		xSemaphoreTake(update_lock, portMAX_DELAY);
+		if (update_handle != 0 && update_header_received && ota_crc_matches()) {
+			esp_err_t res = esp_ota_end(update_handle);
+			update_handle = 0;
+			if (res == ESP_OK) {
 				if (esp_ota_set_boot_partition(update_partition) == ESP_OK) {
-					vTaskDelay(50 / portTICK_PERIOD_MS);
+					vTaskDelay(pdMS_TO_TICKS(50));
 
-					// Here we must use esp_restart even though that does not play nicely
-					// with USB. That is because we skip image validation in the bootloader
-					// after deep sleep to get a faster boot time, allowing less power draw
-					// in applications that need to wake up from deep sleep occasionally.
+					// Restart normally so the bootloader loads the new OTA image.
 					esp_restart();
-//					esp_sleep_enable_timer_wakeup(1000000);
-//					esp_deep_sleep_start();
 				}
 			}
 		}
+		xSemaphoreGive(update_lock);
 		break;
 
 	case COMM_ERASE_NEW_APP: {
 		int32_t ind = 0;
-
-		if (update_handle != 0) {
-			esp_ota_abort(update_handle);
-			update_handle = 0;
-		}
-
-		update_partition = esp_ota_get_next_update_partition(NULL);
+		uint32_t framed_size = len >= 4 ? buffer_get_uint32(data, &ind) : 0;
+		const esp_partition_t *partition = esp_ota_get_next_update_partition(NULL);
 		bool ok = false;
-		if (update_partition != NULL) {
-			esp_err_t res = esp_ota_begin(update_partition, buffer_get_uint32(data, &ind) - 6, &update_handle);
-			ok = res == ESP_OK;
+
+		xSemaphoreTake(update_lock, portMAX_DELAY);
+		if (partition != NULL && framed_size > 6 && framed_size - 6 <= partition->size) {
+			if (update_handle != 0) {
+				esp_ota_abort(update_handle);
+				update_handle = 0;
+			}
+			update_partition = partition;
+			update_size = framed_size - 6;
+			update_header_received = false;
+			ok = esp_ota_begin(update_partition, update_size, &update_handle) == ESP_OK;
 		}
+		xSemaphoreGive(update_lock);
 
 		ind = 0;
-		uint8_t send_buffer[50];
+		uint8_t send_buffer[2];
 		send_buffer[ind++] = COMM_ERASE_NEW_APP;
 		send_buffer[ind++] = ok;
 		send_reply(route, send_buffer, ind);
@@ -227,23 +267,31 @@ static void process_packet(unsigned char *data, unsigned int len, reply_route_t 
 
 	case COMM_WRITE_NEW_APP_DATA: {
 		int32_t ind = 0;
-		uint32_t new_app_offset = buffer_get_uint32(data, &ind);
+		uint32_t framed_offset = len >= 4 ? buffer_get_uint32(data, &ind) : 0;
+		uint32_t new_app_offset = framed_offset < 6 ? 0 : framed_offset - 6;
 
-		if (new_app_offset < 6) {
-			ind += (6 - new_app_offset); // Skip size and crc
-			new_app_offset = 0;
-		} else {
-			new_app_offset -= 6;
-		}
-
+		xSemaphoreTake(update_lock, portMAX_DELAY);
 		bool ok = false;
-		if (update_handle != 0) {
-			esp_err_t res = esp_ota_write_with_offset(update_handle, data + ind, len - ind, new_app_offset);
-			ok = res == ESP_OK;
+		bool header_ok = framed_offset >= 6 && update_header_received;
+		uint16_t crc = update_crc;
+		if (framed_offset == 0 && len >= 10) {
+			uint32_t size = buffer_get_uint32(data, &ind);
+			crc = buffer_get_uint16(data, &ind);
+			header_ok = size == update_size && (!update_header_received || crc == update_crc);
 		}
+		if (update_handle != 0 && header_ok && len > (unsigned int)ind &&
+				new_app_offset <= update_size && len - ind <= update_size - new_app_offset) {
+			ok = ota_chunk_matches(new_app_offset, data + ind, len - ind) ||
+				esp_ota_write_with_offset(update_handle, data + ind, len - ind, new_app_offset) == ESP_OK;
+			if (ok && framed_offset == 0) {
+				update_crc = crc;
+				update_header_received = true;
+			}
+		}
+		xSemaphoreGive(update_lock);
 
 		ind = 0;
-		uint8_t send_buffer[50];
+		uint8_t send_buffer[6];
 		send_buffer[ind++] = COMM_WRITE_NEW_APP_DATA;
 		send_buffer[ind++] = ok;
 		buffer_append_uint32(send_buffer, new_app_offset, &ind);
@@ -529,6 +577,8 @@ static void block_task(void *arg) {
 }
 
 void commands_init(void) {
+	update_lock = xSemaphoreCreateMutex();
+	configASSERT(update_lock != NULL);
 	command_queue = xQueueCreate(COMMAND_QUEUE_DEPTH, sizeof(command_job_t));
 	if (!command_queue) {
 		ESP_LOGE("commands", "Failed to create command queue");
