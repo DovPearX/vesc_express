@@ -251,8 +251,6 @@ static void process_packet(unsigned char *data, unsigned int len, reply_route_t 
 	} break;
 
 	case COMM_REBOOT: {
-		// Deep sleep to reboot as that disconnects USB properly
-//		esp_restart();
 		esp_sleep_enable_timer_wakeup(1000000);
 		esp_deep_sleep_start();
 	} break;
