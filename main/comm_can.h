@@ -34,7 +34,7 @@ typedef struct {
 bool comm_can_start_bus(unsigned bus, int pin_tx, int pin_rx, CAN_BAUD baud);
 void comm_can_stop_bus(unsigned bus);
 bool comm_can_ping_bus(unsigned bus, uint8_t controller_id, HW_TYPE *hw_type);
-void comm_can_transmit_bus(unsigned bus, uint32_t id, const uint8_t *data, uint8_t len, bool ext);
+bool comm_can_transmit_bus(unsigned bus, uint32_t id, const uint8_t *data, uint8_t len, bool ext);
 bool comm_can_get_stats(unsigned bus, comm_can_stats_t *stats);
 void comm_can_send_buffer_bus(unsigned bus, uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send);
 
@@ -58,6 +58,15 @@ void comm_can2_use_vesc_decoder(bool use);
 void comm_can2_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can2_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can2_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send_type);
+#endif
+
+#if SOC_TWAI_CONTROLLER_NUM > 2
+bool comm_can3_start(int pin_tx, int pin_rx, int baud_kbits);
+void comm_can3_stop(void);
+void comm_can3_use_vesc_decoder(bool use);
+void comm_can3_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len);
+void comm_can3_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len);
+void comm_can3_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send_type);
 #endif
 
 #endif /* MAIN_COMM_CAN_H_ */

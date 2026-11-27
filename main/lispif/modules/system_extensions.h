@@ -1,0 +1,6 @@
+#ifndef MAIN_LISPIF_MODULES_SYSTEM_EXTENSIONS_H_
+#define MAIN_LISPIF_MODULES_SYSTEM_EXTENSIONS_H_
+
+void lispif_load_system_extensions(void);
+
+#endif

@@ -32,6 +32,8 @@
 #include "comm_can.h"
 #include "terminal.h"
 #include "mempools.h"
+#include "flash_helper.h"
+#include "lispif.h"
 
 #ifdef OVR_CONF_PARSER_H
 #include OVR_CONF_PARSER_H
@@ -134,6 +136,7 @@ static TaskHandle_t command_worker;
 static reply_route_t worker_route;
 static portMUX_TYPE route_lock = portMUX_INITIALIZER_UNLOCKED;
 static reply_route_t last_route;
+static reply_route_t lisp_route;
 static reply_route_t forward_routes[SOC_TWAI_CONTROLLER_NUM];
 static uint32_t dropped_commands;
 
@@ -443,6 +446,102 @@ static void process_packet(unsigned char *data, unsigned int len, reply_route_t 
 		send_reply(route, send_buffer, ind);
 	} break;
 
+	case COMM_GET_QML_UI_APP:
+	case COMM_LISP_READ_CODE: {
+		if (xTaskGetCurrentTaskHandle() != command_worker) {
+			queue_packet(data - 1, len + 1, route, COMMAND_JOB_PACKET);
+			break;
+		}
+		if (len < 8) {
+			break;
+		}
+
+		main_wait_until_init_done();
+		int32_t index = 0;
+		uint32_t requested = buffer_get_uint32(data, &index);
+		uint32_t offset = buffer_get_uint32(data, &index);
+		int code_type = packet_id == COMM_LISP_READ_CODE ? CODE_IND_LISP : CODE_IND_QML;
+		uint32_t size = flash_helper_code_size(code_type);
+		if (size == 0) {
+			offset = 0;
+		}
+		if (offset > size || requested > PACKET_MAX_PL_LEN - 9) {
+			break;
+		}
+		if (requested > size - offset) {
+			requested = size - offset;
+		}
+
+		uint8_t *reply = mempools_get_packet_buffer();
+		index = 0;
+		reply[index++] = packet_id;
+		buffer_append_uint32(reply, size, &index);
+		buffer_append_uint32(reply, offset, &index);
+		if (!requested || flash_helper_code_data(code_type, offset, reply + index, requested)) {
+			send_reply(route, reply, index + requested);
+		}
+		mempools_free_packet_buffer(reply);
+	} break;
+
+	case COMM_QMLUI_ERASE:
+	case COMM_LISP_ERASE_CODE: {
+		if (xTaskGetCurrentTaskHandle() != command_worker) {
+			queue_packet(data - 1, len + 1, route, COMMAND_JOB_PACKET);
+			break;
+		}
+		main_wait_until_init_done();
+		int32_t index = 0;
+		int32_t size = len >= 4 ? buffer_get_int32(data, &index) : -1;
+		int code_type = packet_id == COMM_LISP_ERASE_CODE ? CODE_IND_LISP : CODE_IND_QML;
+		bool ok = (code_type != CODE_IND_LISP || lispif_stop()) &&
+				flash_helper_erase_code(code_type, size);
+		uint8_t reply[] = {packet_id, ok};
+		send_reply(route, reply, sizeof(reply));
+	} break;
+
+	case COMM_QMLUI_WRITE:
+	case COMM_LISP_WRITE_CODE: {
+		if (xTaskGetCurrentTaskHandle() != command_worker) {
+			queue_packet(data - 1, len + 1, route, COMMAND_JOB_PACKET);
+			break;
+		}
+		if (len <= 4) {
+			break;
+		}
+
+		main_wait_until_init_done();
+		int32_t index = 0;
+		uint32_t offset = buffer_get_uint32(data, &index);
+		int code_type = packet_id == COMM_LISP_WRITE_CODE ? CODE_IND_LISP : CODE_IND_QML;
+		uint32_t size = flash_helper_code_size_raw(code_type);
+		bool ok = offset < size && len - index <= size - offset &&
+				(code_type != CODE_IND_LISP || lispif_stop()) &&
+				flash_helper_write_code(code_type, offset, data + index, len - index, 0);
+		uint8_t reply[6] = {packet_id, ok};
+		index = 2;
+		buffer_append_uint32(reply, offset, &index);
+		send_reply(route, reply, sizeof(reply));
+	} break;
+
+	case COMM_LISP_SET_RUNNING:
+	case COMM_LISP_GET_STATS:
+	case COMM_LISP_REPL_CMD:
+	case COMM_LISP_STREAM_CODE:
+	case COMM_CUSTOM_APP_DATA:
+		if (xTaskGetCurrentTaskHandle() != command_worker) {
+			queue_packet(data - 1, len + 1, route, COMMAND_JOB_PACKET);
+			break;
+		}
+		main_wait_until_init_done();
+		if (packet_id == COMM_LISP_REPL_CMD || packet_id == COMM_LISP_STREAM_CODE ||
+				(packet_id == COMM_LISP_SET_RUNNING && len && data[0])) {
+			portENTER_CRITICAL(&route_lock);
+			lisp_route = route;
+			portEXIT_CRITICAL(&route_lock);
+		}
+		lispif_process_cmd(data - 1, len + 1, commands_send_packet);
+		break;
+
 	// Blocking commands
 	case COMM_TERMINAL_CMD:
 	case COMM_PING_CAN:
@@ -655,5 +754,32 @@ int commands_printf(const char* format, ...) {
 		commands_send_packet((unsigned char*)print_buffer, len + 1);
 	}
 
+	return len;
+}
+
+int commands_printf_lisp(const char *format, ...) {
+	char packet[PRINT_BUFFER_SIZE];
+	packet[0] = COMM_LISP_PRINT;
+	va_list args;
+	va_start(args, format);
+	int len = vsnprintf(packet + 1, sizeof(packet) - 1, format, args);
+	va_end(args);
+	if (len <= 0) {
+		return len;
+	}
+	if (len > sizeof(packet) - 2) {
+		len = sizeof(packet) - 2;
+	}
+	if (packet[len] == '\n') {
+		len--;
+	}
+	if (command_worker && xTaskGetCurrentTaskHandle() == command_worker) {
+		send_reply(worker_route, (unsigned char *)packet, len + 1);
+		return len;
+	}
+	portENTER_CRITICAL(&route_lock);
+	reply_route_t route = lisp_route;
+	portEXIT_CRITICAL(&route_lock);
+	send_reply(route, (unsigned char *)packet, len + 1);
 	return len;
 }

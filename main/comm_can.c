@@ -34,6 +34,7 @@
 #include "crc.h"
 #include "packet.h"
 #include "commands.h"
+#include "lispif.h"
 #include <string.h>
 
 // Status messages
@@ -523,6 +524,7 @@ static void process_task(void *arg) {
 			while (count < RX_FRAMES_PER_TURN && xQueueReceive(queue, &msg, 0) == pdTRUE) {
 				count++;
 
+				lispif_process_can(bus, msg.identifier, msg.data, msg.data_length_code, msg.extd);
 				if (decode && msg.extd) {
 					decode_msg(bus, &msg, false);
 				}
@@ -673,10 +675,8 @@ void comm_can_change_pins(int tx, int rx) {
 	xSemaphoreGive(state->send_mutex);
 }
 
-void comm_can_transmit_bus(unsigned bus, uint32_t id, const uint8_t *data, uint8_t len, bool ext) {
-	if (bus < SOC_TWAI_CONTROLLER_NUM) {
-		can_transmit(&buses[bus], id, data, len, ext, portMAX_DELAY);
-	}
+bool comm_can_transmit_bus(unsigned bus, uint32_t id, const uint8_t *data, uint8_t len, bool ext) {
+	return bus < SOC_TWAI_CONTROLLER_NUM && can_transmit(&buses[bus], id, data, len, ext, portMAX_DELAY);
 }
 
 void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
@@ -854,6 +854,35 @@ void comm_can2_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len) {
 
 void comm_can2_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send_type) {
 	comm_can_send_buffer_bus(1, controller_id, data, len, send_type);
+}
+
+#endif
+
+#if SOC_TWAI_CONTROLLER_NUM > 2
+bool comm_can3_start(int pin_tx, int pin_rx, int baud_kbits) {
+	return comm_can_start_bus(2, pin_tx, pin_rx, comm_can_kbits_to_baud(baud_kbits));
+}
+
+void comm_can3_stop(void) {
+	comm_can_stop_bus(2);
+}
+
+void comm_can3_use_vesc_decoder(bool use) {
+	portENTER_CRITICAL(&stats_lock);
+	decoder_disabled[2] = !use;
+	portEXIT_CRITICAL(&stats_lock);
+}
+
+void comm_can3_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
+	comm_can_transmit_bus(2, id, data, len, true);
+}
+
+void comm_can3_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len) {
+	comm_can_transmit_bus(2, id, data, len, false);
+}
+
+void comm_can3_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send_type) {
+	comm_can_send_buffer_bus(2, controller_id, data, len, send_type);
 }
 
 #endif

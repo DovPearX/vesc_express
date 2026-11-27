@@ -40,5 +40,6 @@ void commands_process_packet(
 void commands_send_packet(unsigned char *data, unsigned int len);
 void commands_send_packet_can_last(unsigned char *data, unsigned int len);
 int commands_printf(const char *format, ...);
+int commands_printf_lisp(const char *format, ...);
 
 #endif /* MAIN_COMMANDS_H_ */

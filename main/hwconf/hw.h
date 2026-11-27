@@ -46,6 +46,10 @@
 #define HW_INIT_HOOK()
 #endif
 
+#ifndef HW_POST_LISPIF_HOOK
+#define HW_POST_LISPIF_HOOK()
+#endif
+
 #ifndef UART_NUM
 #define HW_NO_UART
 #define UART_NUM					0

@@ -30,6 +30,8 @@
 #include "comm_can.h"
 #include "commands.h"
 #include "crc.h"
+#include "flash_helper.h"
+#include "lispif.h"
 
 #ifdef OVR_CONF_XML_H
 #include OVR_CONF_XML_H
@@ -63,6 +65,8 @@ void app_main(void) {
 		nvs_flash_erase();
 		nvs_flash_init();
 	}
+
+	flash_helper_init();
 
 	{
 		memset((void*)&backup, 0, sizeof(backup));
@@ -105,6 +109,12 @@ void app_main(void) {
 
 	}
 
+#ifdef HW_EARLY_LBM_INIT
+	HW_INIT_HOOK();
+	lispif_init();
+	HW_POST_LISPIF_HOOK();
+#endif
+
 	mempools_init();
 	commands_init();
 #if defined(CAN_TX_GPIO_NUM) && defined(CAN_RX_GPIO_NUM)
@@ -119,7 +129,11 @@ void app_main(void) {
 
 	vTaskDelay(1);
 
+#ifndef HW_EARLY_LBM_INIT
 	HW_INIT_HOOK();
+	lispif_init();
+	HW_POST_LISPIF_HOOK();
+#endif
 
 #if !defined(HW_NO_UART) && defined(HW_UART_COMM)
 	comm_uart_init(UART_TX, UART_RX, UART_NUM, UART_BAUDRATE);

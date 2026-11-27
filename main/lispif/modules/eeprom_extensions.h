@@ -1,0 +1,6 @@
+#ifndef MAIN_LISPIF_MODULES_EEPROM_EXTENSIONS_H_
+#define MAIN_LISPIF_MODULES_EEPROM_EXTENSIONS_H_
+
+void lispif_load_eeprom_extensions(void);
+
+#endif
