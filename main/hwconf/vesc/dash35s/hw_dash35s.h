@@ -28,6 +28,7 @@
 
 #define HW_EARLY_LBM_INIT
 #define HW_INIT_HOOK()              hw_init()
+#define HW_USE_NAV
 
 // UART
 #define HW_UART_COMM

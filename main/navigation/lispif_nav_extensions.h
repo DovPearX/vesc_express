@@ -1,0 +1,6 @@
+#ifndef MAIN_NAVIGATION_LISPIF_NAV_EXTENSIONS_H_
+#define MAIN_NAVIGATION_LISPIF_NAV_EXTENSIONS_H_
+
+void lispif_nav_load_extensions(void);
+
+#endif /* MAIN_NAVIGATION_LISPIF_NAV_EXTENSIONS_H_ */

@@ -36,6 +36,10 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 
+#ifdef HW_USE_NAV
+#include "lispif_nav_extensions.h"
+#endif
+
 #define GC_STACK_SIZE			160
 #define PRINT_STACK_SIZE		128
 #ifndef EXTENSION_STORAGE_SIZE
@@ -958,6 +962,9 @@ bool lispif_restart(bool print, bool load_code) {
 		}
 		
 		lispif_load_vesc_extensions(main_found);
+#ifdef HW_USE_NAV
+		lispif_nav_load_extensions();
+#endif
 
 		for (int i = 0;i < EXT_LOAD_CALLBACK_LEN;i++) {
 			if (ext_load_callbacks[i] == 0) {

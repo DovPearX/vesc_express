@@ -17,3 +17,7 @@ main/hwconf/**/*/qmlui_hw.h
 # feel like making that decision right now...
 managed_components/
 dependencies.lock
+
+/main/navigation/maps/
+/main/navigation/__pycache__/
+/main/navigation/map_builder/__pycache__/

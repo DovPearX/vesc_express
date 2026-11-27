@@ -70,6 +70,8 @@ set(COMPONENT_SRCS
 
 "rgbled/lispif_rgbled_extensions.c"
 
+"navigation/lispif_nav_extensions.c"
+
 "touch/lispif_touch_extensions.c"
 "touch/touch_cst836u.c"
 "touch/touch_axs5106.c"
@@ -146,6 +148,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "ble"
 "rgbled"
 "touch"
+"navigation"
 "drivers"
 "drivers/bme280"
 "drivers/imu"
